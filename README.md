@@ -14,7 +14,25 @@ The solution is built around:
 - a systemd timer: `netbird-delayed-update.timer`
 - an update logic script: `/usr/local/sbin/netbird-delayed-update.sh`
 
----
+## Quick start
+
+```bash
+# Clone the repository and enter it
+git clone https://github.com/NetHorror/netbird-delayed-auto-update.git
+cd netbird-delayed-auto-update
+
+# Make the installer executable
+chmod +x install-netbird-delayed-update.sh
+
+# Install with a 3-day grace period (or pick your own number of days)
+sudo ./install-netbird-delayed-update.sh 3
+
+# Verify that the timer is active
+systemctl status netbird-delayed-update.timer
+
+# Check the last runs
+journalctl -u netbird-delayed-update.service -n 20 --no-pager
+```
 
 ## Features
 
