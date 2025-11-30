@@ -307,7 +307,5 @@ NetBird itself is **not** removed by this; only the delayed update mechanism.
 
 ---
 
-## License
-
-This project is licensed under the **MIT License**. See the [`LICENSE`](LICENSE) file for details.
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE) ![Platform: Linux](https://img.shields.io/badge/platform-Linux-informational) ![Shell](https://img.shields.io/badge/Shell-bash-lightgrey)
 
