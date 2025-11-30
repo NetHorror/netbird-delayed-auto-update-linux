@@ -1,5 +1,7 @@
 # NetBird Delayed Auto-Update (APT + systemd)
 
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE) ![Platform: Linux](https://img.shields.io/badge/platform-Linux-informational) ![Init: systemd](https://img.shields.io/badge/init-systemd-blue) ![Shell: bash](https://img.shields.io/badge/shell-bash-green)
+
 This repository provides a small, opinionated automation that **delays NetBird updates for a configurable number of days** after a new version appears in the APT repository.
 
 The main idea:
@@ -306,7 +308,3 @@ sudo systemctl daemon-reload
 NetBird itself is **not** removed by this; only the delayed update mechanism.
 
 ---
-
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE) ![Platform: Linux](https://img.shields.io/badge/platform-Linux-informational) ![Init: systemd](https://img.shields.io/badge/init-systemd-blue) ![Shell: bash](https://img.shields.io/badge/shell-bash-lightgrey)
-
-
