@@ -73,7 +73,7 @@ journalctl -u netbird-delayed-update.service -n 20 --no-pager
 Clone or download this repository, then run the installer script as root.
 
 ```bash
-git clone https://github.com/NetHorror/netbird-delayed-auto-update.git
+git clone https://github.com/NetHorror/netbird-delayed-auto-update-linux.git
 cd netbird-delayed-auto-update
 
 # Make the installer executable
