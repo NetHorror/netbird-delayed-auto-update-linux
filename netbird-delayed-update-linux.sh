@@ -25,7 +25,7 @@
 #
 #   # Install with custom settings:
 #   sudo ./netbird-delayed-update-linux.sh --install \
-#     --delay-days 3 \
+#     --delay-days 10 \
 #     --max-random-delay-seconds 3600 \
 #     --log-retention-days 60 \
 #     --daily-time "04:00"
@@ -52,7 +52,7 @@ TIMER_NAME="netbird-delayed-update.timer"
 # Script installed path (used by --install, kept for backward compatibility)
 INSTALLED_SCRIPT_PATH="/usr/local/sbin/netbird-delayed-update.sh"
 
-DELAY_DAYS=3
+DELAY_DAYS=10
 MAX_RANDOM_DELAY_SECONDS=3600
 DAILY_TIME="04:00"
 LOG_RETENTION_DAYS=60
@@ -126,7 +126,7 @@ Install / uninstall options:
 Examples:
   sudo ./netbird-delayed-update-linux.sh --install
   sudo ./netbird-delayed-update-linux.sh --install \\
-    --delay-days 3 --max-random-delay-seconds 3600 --daily-time "04:00"
+    --delay-days 10 --max-random-delay-seconds 3600 --daily-time "04:00"
   sudo ./netbird-delayed-update-linux.sh --uninstall --remove-state
   sudo ./netbird-delayed-update-linux.sh --delay-days 0 --max-random-delay-seconds 0
 
@@ -181,7 +181,7 @@ for key in ("CandidateVersion", "FirstSeenUtc", "LastCheckUtc"):
     print(data.get(key, ""))
 PY
 )"; then
-    log "WARNING: Failed to parse state file '${STATE_FILE}', ignoring it."
+    log(f"WARNING: Failed to parse state file '${STATE_FILE}', ignoring it.")
     return 1
   fi
 
@@ -200,11 +200,8 @@ save_state() {
   local last_check="$3"
 
   mkdir -p "${STATE_DIR}"
-  python3 - "${candidate}" "${first_seen}" "${last_check}" "${STATE_FILE}" <<'PY' 2>/dev/null || {
-    # Best-effort; errors are logged but not fatal
-    log "WARNING: Failed to write state file '${STATE_FILE}'."
-    return 0
-}
+
+  python3 - "${candidate}" "${first_seen}" "${last_check}" "${STATE_FILE}" <<'PY' 2>/dev/null
 import json, sys
 candidate, first_seen, last_check, path = sys.argv[1:5]
 obj = {
@@ -217,7 +214,12 @@ try:
         json.dump(obj, f, indent=2, sort_keys=True)
 except Exception as e:
     sys.stderr.write(f"Failed to write state file '{path}': {e}\n")
+    sys.exit(1)
 PY
+
+  if [[ $? -ne 0 ]]; then
+    log "WARNING: Failed to write state file '${STATE_FILE}'."
+  fi
 }
 
 compute_age_days() {
@@ -478,7 +480,7 @@ run_delayed_update() {
     sleep "${sleep_for}"
   fi
 
-  check_prerequisites()
+  check_prerequisites
 
   local installed_ver
   installed_ver="$(get_installed_version)"
