@@ -1,310 +1,305 @@
-# NetBird Delayed Auto-Update (APT + systemd)
+# NetBird Delayed Auto-Update
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE) ![Platform: Linux](https://img.shields.io/badge/platform-Linux-informational) ![Init: systemd](https://img.shields.io/badge/init-systemd-blue) ![Shell: bash](https://img.shields.io/badge/shell-bash-green)
 
-This repository provides a small, opinionated automation that **delays NetBird updates for a configurable number of days** after a new version appears in the APT repository.
+Helper script that implements **delayed / staged** updates for the NetBird client
+installed from an APT repository.
 
-The main idea:
+Instead of upgrading to the newest package as soon as it appears, each new
+version must "age" for a configurable number of days before it is allowed to
+be installed. Short-lived or broken releases that are quickly replaced in the
+repository will never reach your machines.
 
-> Don’t upgrade clients immediately when a new NetBird version hits the repo.  
-> Instead, wait _N_ days. If that version gets replaced quickly (a “bad” or “hotfix” release), clients will **never** upgrade to it.
+This project mirrors the behaviour of the Windows and macOS delayed update
+scripts, but is tailored to Linux with APT and systemd.
 
-The solution is built around:
+Current script version: **0.2.0**
 
-- a single installer script: `install-netbird-delayed-update.sh`
-- a systemd oneshot service: `netbird-delayed-update.service`
-- a systemd timer: `netbird-delayed-update.timer`
-- an update logic script: `/usr/local/sbin/netbird-delayed-update.sh`
+---
 
-## Quick start
+## Idea
 
-```bash
-# Clone the repository and enter it
-git clone https://github.com/NetHorror/netbird-delayed-auto-update.git
-cd netbird-delayed-auto-update
+- Do **not** upgrade NetBird immediately when a new version hits the APT repo.
+- Treat the latest available version as a **candidate**.
+- Let the candidate "age" for `N` days.
+- Only after it stayed unchanged for `N` days, upgrade to that version.
+- If a candidate is replaced quickly (hotfix or broken release), it never gets installed.
 
-# Make the installer executable
-chmod +x install-netbird-delayed-update.sh
-
-# Install with a 3-day grace period (or pick your own number of days)
-sudo ./install-netbird-delayed-update.sh 3
-
-# Verify that the timer is active
-systemctl status netbird-delayed-update.timer
-
-# Check the last runs
-journalctl -u netbird-delayed-update.service -n 20 --no-pager
-```
+---
 
 ## Features
 
-- 🕒 **Version aging**  
-  Only upgrades to a new NetBird version after it has been present in the APT repository for at least _N_ days (default: `3`).
+### Delayed rollout (version aging)
 
-- ⏰ **Daily check at 04:00 (server time)**  
-  The systemd timer is scheduled for `04:00` based on the server’s local timezone.
+- The APT candidate version for `netbird` becomes a *candidate*.
+- A candidate must stay unchanged for `--delay-days` days before upgrade is allowed.
+- State is stored as a small JSON file at:
 
-- 🎲 **Random spread of updates**  
-  Uses `RandomizedDelaySec=3600`, so the effective run happens at a random time between `04:00` and `05:00`. This helps avoid thundering herds hitting the package repository simultaneously.
+  ~~~text
+  /var/lib/netbird-delayed-update/state.json
+  ~~~
 
-- 📦 **APT-based only**  
-  Uses the APT **candidate** version for the `netbird` package; no external APIs (no GitHub, no HTTP calls).
+### No auto-install
 
-- 🧠 **Local state tracking**  
-  Keeps a simple state file with:
-  - the last seen candidate version
-  - the timestamp when it was first observed  
-  (stored in `/var/lib/netbird-delayed-update/state`)
+- The script only upgrades an already installed `netbird` package.
+- If NetBird is not present locally, it logs a message and exits without installing anything.
 
-- 🔒 **Safe behavior**  
-  - Does **not** auto-install NetBird if it’s missing.  
-  - Only performs `--only-upgrade` on the `netbird` (and optionally `netbird-ui`) package.
+### APT-only update
+
+- Uses APT metadata (`apt-cache policy netbird`) to detect the candidate version.
+- Upgrade is performed via:
+
+  ~~~bash
+  apt-get install --only-upgrade -y netbird [netbird-ui]
+  ~~~
+
+- If `netbird-ui` is not available, the script falls back to upgrading `netbird` only.
+
+### Log files with retention
+
+- Each run writes a log file under:
+
+  ~~~text
+  /var/lib/netbird-delayed-update/netbird-delayed-update-YYYYMMDD-HHMMSS.log
+  ~~~
+
+- `--log-retention-days` (default: `60`) controls how long these logs are kept.
+- `--log-retention-days 0` disables log cleanup.
+
+### Script self-update (optional)
+
+- On each run, the script can check the latest GitHub release of this repository.
+- If a newer version exists, it:
+  - tries `git pull --ff-only` when the script lives inside a git checkout, or
+  - downloads `netbird-delayed-update-linux.sh` from the tagged version on
+    `raw.githubusercontent.com` and overwrites the local script.
+- The new version is used on the **next** run.
+
+### Systemd integration
+
+- `--install` / `-i` creates or updates:
+  - `netbird-delayed-update.service`
+  - `netbird-delayed-update.timer`
+- Daily schedule at a configurable time (`--daily-time "HH:MM"`, default `04:00`).
+- `RandomizedDelaySec` is set to `--max-random-delay-seconds` (default `3600`)
+  to spread the actual run time across machines.
+- The timer is configured with `Persistent=true`, so missed runs are executed
+  shortly after boot.
 
 ---
 
 ## Requirements
 
-- Linux with **systemd** (e.g. Ubuntu 24.04).
-- `netbird` installed from an APT repository (so that `apt-cache policy netbird` shows a valid `Candidate` version).
-- Root access (`sudo`) to install and manage systemd units.
+- Linux system with:
+  - `systemd` (for the service and timer),
+  - `bash`,
+  - `curl`,
+  - `python3`,
+  - APT (`apt-get`, `apt-cache`, `dpkg-query`).
+- NetBird installed from an APT repository, so that:
+
+  ~~~bash
+  apt-cache policy netbird
+  ~~~
+
+  shows a valid `Candidate` version.
+- Root access (`sudo`) to:
+  - install / remove systemd units,
+  - run the delayed-update script in production.
 
 ---
 
-## Installation
+## Repository structure
 
-Clone or download this repository, then run the installer script as root.
+~~~text
+netbird-delayed-auto-update-linux/
+├── LICENSE
+├── README.md
+├── CHANGELOG.md
+└── netbird-delayed-update-linux.sh
+~~~
 
-```bash
+---
+
+## Quick start
+
+### 1. Clone the repository
+
+~~~bash
 git clone https://github.com/NetHorror/netbird-delayed-auto-update-linux.git
-cd netbird-delayed-auto-update
+cd netbird-delayed-auto-update-linux
+~~~
 
-# Make the installer executable
-chmod +x install-netbird-delayed-update.sh
+### 2. Make the main script executable
 
-# Default: wait 3 days after a new version appears in APT
-sudo ./install-netbird-delayed-update.sh
+~~~bash
+chmod +x ./netbird-delayed-update-linux.sh
+~~~
 
-# Or specify a custom delay (e.g. 5 days):
-sudo ./install-netbird-delayed-update.sh 5
-```
-  
-## The installer will:
+### 3. (Optional) Test a one-off run
 
-- Place the main update script at /usr/local/sbin/netbird-delayed-update.sh
-- Create /var/lib/netbird-delayed-update for storing the state file
-- Install netbird-delayed-update.service
-- Install netbird-delayed-update.timer
-- Reload systemd and enable + start the timer
-- After installation, the check will run automatically every day between 04:00–05:00 server time
+Run a single check with **no** delay and **no** random jitter:
 
----
+~~~bash
+sudo ./netbird-delayed-update-linux.sh \
+  --delay-days 0 \
+  --max-random-delay-seconds 0 \
+  --log-retention-days 60
+~~~
 
-## How it works
+You should see log output mentioning:
 
-1. The timer (`netbird-delayed-update.timer`) runs the service once per day, at 04:00 (with a randomized delay up to 1 hour).
-2. The service calls `/usr/local/sbin/netbird-delayed-update.sh`.
-3. The update script:
-   - Reads the current **candidate version** for `netbird` from APT using `apt-cache policy`.
-   - Reads the **currently installed** version from `dpkg`.
-   - If the installed version is already `>=` candidate → exits (no update needed, state can be cleaned up).
-   - If the candidate version differs from what is stored in its local state file (`/var/lib/netbird-delayed-update/state`), it:
-     - Records the new version and the current timestamp.
-     - Exits **without updating**. This starts the “aging” period.
-   - On subsequent runs, if the candidate version has been the same for at least **N days** (based on the stored timestamp), it:
-     - Runs `apt-get update`.
-     - Attempts `apt-get install --only-upgrade -y netbird netbird-ui`, and falls back to just `netbird` if the UI package is not present.
-     - Restarts the NetBird service via systemd (`systemctl restart netbird`) if available, or falls back to `netbird service restart` if not.
+- the local NetBird version,
+- the candidate version from APT,
+- whether the upgrade is allowed or still "aging".
 
-If a “bad” NetBird version appears and then gets replaced in APT _before_ it’s old enough, the script will never upgrade to it. The “aging” counter resets when a new candidate version is detected.
+The full log file is stored under:
+
+~~~text
+/var/lib/netbird-delayed-update/netbird-delayed-update-YYYYMMDD-HHMMSS.log
+~~~
 
 ---
 
-## Example timeline
+## Installing the systemd timer (recommended)
 
-Below is a simplified example of how the delayed update logic behaves over time.
+To install with default settings:
 
-**Assumptions:**
+- delay: 3 days
+- random jitter: up to 3600 seconds
+- time: 04:00 (server local time)
+- log retention: 60 days
 
-- `MIN_AGE_DAYS = 3`
-- The update check runs once per day at ~04:00 server time.
+run:
 
-### Day 0 – New version appears
+~~~bash
+sudo ./netbird-delayed-update-linux.sh --install
+~~~
 
-- A new NetBird version `1.2.0` appears in the APT repository.
-- The next time the timer runs (~04:00):
-  - The script sees that the **candidate version** (`1.2.0`) is **new** compared to what is stored in its local state (or there is no state yet).
-  - It records:
-    - version: `1.2.0`
-    - first-seen timestamp: `now`
-  - **No update is performed yet**. The aging period starts.
+To customise the schedule and settings:
 
-### Day 1 – Version still “young”
+~~~bash
+sudo ./netbird-delayed-update-linux.sh --install \
+  --delay-days 3 \
+  --max-random-delay-seconds 3600 \
+  --log-retention-days 60 \
+  --daily-time "04:00"
+~~~
 
-- Timer runs again (~04:00).
-- Candidate version in APT is still `1.2.0`.
-- The script:
-  - Loads the stored state (`1.2.0`, first-seen = yesterday).
-  - Calculates the age: ~1 day.
-  - Since `1 day < MIN_AGE_DAYS (3)` → the update is **deferred**.
-  - No change is made; it just waits.
+This will:
 
-### Day 2 – Hotfix appears (bad version replaced)
-
-- During the day, the NetBird repository replaces `1.2.0` with `1.2.1` (e.g. a hotfix).
-- Next morning (~04:00):
-  - The candidate version is now `1.2.1`.
-  - The local state still contains `1.2.0` as the last seen version.
-  - The script detects that the candidate version has changed:
-    - It **overwrites the state** with:
-      - version: `1.2.1`
-      - first-seen timestamp: `now`
-    - It **does not upgrade** yet.
-  - Result: clients **never upgraded to 1.2.0**, which turned out to be a short-lived version.
-
-### Day 3 – New version still aging
-
-- Timer runs (~04:00).
-- Candidate in APT is still `1.2.1`.
-- The script:
-  - Reads state for `1.2.1` (first-seen = yesterday).
-  - Age ≈ 1 day.
-  - Since `1 day < MIN_AGE_DAYS (3)` → still **too fresh**, no update.
-
-### Day 4 – Version is old enough
-
-- Timer runs (~04:00).
-- Candidate is still `1.2.1`.
-- Age since first seen reaches or exceeds `3` days (depending on exact timing).
-- Once `age_days >= MIN_AGE_DAYS`:
-  - The script:
-    - Verifies that the installed version `<` candidate.
-    - Runs `apt-get update` and then `apt-get install --only-upgrade -y netbird [netbird-ui]`.
-    - Restarts the NetBird service.
-  - All clients now upgrade directly to `1.2.1`, **skipping the short-lived 1.2.0 entirely**.
-
-### Day X – Candidate equals installed
-
-- After the successful upgrade, on subsequent days:
-  - The script sees that the **installed version is already >= candidate version**.
-  - It exits immediately with “no update needed” and optionally clears the old state file.
-  - When a new version appears in the repository, the cycle starts over again.
+- copy the script to `/usr/local/sbin/netbird-delayed-update.sh`;
+- create `/etc/systemd/system/netbird-delayed-update.service`;
+- create `/etc/systemd/system/netbird-delayed-update.timer`;
+- reload systemd and enable the timer;
+- schedule the script to run daily at the specified time, with a random delay.
 
 ---
 
-## Expected output (logs)
+## How it works (behaviour details)
 
-The main place to observe the behavior is `journalctl` for the service unit:
+On each run (manual or via systemd), the script:
 
-```bash
-journalctl -u netbird-delayed-update.service -n 50
-```
+1. Verifies that the system is APT-based and that `netbird` is installed locally.
+2. Reads the local version from `dpkg`:
 
-Below are a few typical snippets.
+   ~~~bash
+   dpkg-query -W -f='${Version}\n' netbird
+   ~~~
 
-### 1. First time a new candidate version is seen
+3. Reads the candidate version from APT:
 
-```text
-New candidate version detected: 1.2.3. First seen now, waiting 3 day(s).
-```
+   ~~~bash
+   apt-cache policy netbird
+   ~~~
 
-The script records the new version and starts the aging period. No upgrade is performed yet.
+4. Loads `state.json`. If the candidate version changed compared to the last run:
+   - updates `CandidateVersion`,
+   - sets `FirstSeenUtc` and `LastCheckUtc` to now,
+   - logs that the version is new and starts the aging period (no upgrade yet).
 
-### 2. Version still too “young” (aging in progress)
+5. Computes the age (in days) between `FirstSeenUtc` and the current time:
+   - negative values (clock skew) are clamped to `0`.
 
-```text
-Candidate version 1.2.3 has been in the repository for approximately 1 day(s).
-Age is less than 3 day(s) – deferring update.
-```
+6. If `age < delayDays`:
+   - logs that the version is still aging and **does not** upgrade.
 
-You’ll see this every day until the age threshold is reached, as long as the candidate version stays the same.
-
-### 3. Version is mature enough and gets upgraded
-
-```text
-Candidate version 1.2.3 has been in the repository for approximately 3 day(s).
-Upgrading NetBird: 1.2.2 → 1.2.3 (version has matured for 3 day(s)).
-NetBird delayed update finished.
-```
-
-Depending on your systemd logging setup, you may also see `apt-get` progress lines and a subsequent service restart, e.g.:
-
-```text
-systemd[1]: Starting NetBird auto-update with version aging (via APT)...
-netbird-delayed-update.sh[XXXX]: Upgrading NetBird: 1.2.2 → 1.2.3 (version has matured for 3 day(s)).
-systemd[1]: netbird-delayed-update.service: Succeeded.
-systemd[1]: Finished NetBird auto-update with version aging (via APT).
-```
-
-### 4. Already up to date
-
-```text
-Local version 1.2.3 is already >= repository version 1.2.3. No update needed.
-```
-
-Typical output once your system is already on the latest candidate version.
-
-### 5. NetBird not installed (safety check)
-
-```text
-NetBird (package netbird) is not installed. Auto-install is not performed.
-```
-
-The automation only upgrades existing installations and does not silently install NetBird.
+7. If the candidate has aged enough:
+   - compares local vs candidate version with `dpkg --compare-versions`;
+   - if the local version is older:
+     - runs `apt-get update` (best-effort),
+     - attempts to upgrade `netbird` and optionally `netbird-ui`,
+     - restarts the NetBird service via `systemctl restart netbird` or
+       `netbird service restart`.
 
 ---
 
-## Configuration
+## Logs and state
 
-### Minimum age (days)
+All runtime files live under:
 
-The minimum age is passed as an environment variable `MIN_AGE_DAYS` from the systemd service:
+~~~text
+/var/lib/netbird-delayed-update/
+~~~
 
-```ini
-# /etc/systemd/system/netbird-delayed-update.service
-[Service]
-Type=oneshot
-Environment=MIN_AGE_DAYS=3
-ExecStart=/usr/local/sbin/netbird-delayed-update.sh
-```
+- `state.json` – delayed rollout state:
+  - `CandidateVersion`
+  - `FirstSeenUtc`
+  - `LastCheckUtc`
+- `netbird-delayed-update-*.log` – per-run logs.
+- Additional files may appear in the future if needed.
 
-To adjust it later:
+---
 
-```bash
-sudo nano /etc/systemd/system/netbird-delayed-update.service
-# change MIN_AGE_DAYS value
-sudo systemctl daemon-reload
-sudo systemctl restart netbird-delayed-update.timer
-```
+## Manual one-off runs
 
-### Timer schedule
+You can also run the script manually without installing the timer, for example:
 
-The timer is defined as:
+~~~bash
+sudo ./netbird-delayed-update-linux.sh \
+  --delay-days 7 \
+  --max-random-delay-seconds 0 \
+  --log-retention-days 30
+~~~
 
-```ini
-# /etc/systemd/system/netbird-delayed-update.timer
-[Timer]
-OnCalendar=*-*-* 04:00:00
-RandomizedDelaySec=3600
-Persistent=true
-```
+This is useful for:
 
-You can adjust the time or the random spread as needed.
+- testing in staging,
+- forcing a check immediately after changing the delay or other parameters.
 
 ---
 
 ## Uninstall
 
-To remove the automation:
+To remove only the systemd units (keep script, state and logs):
 
-```bash
-sudo systemctl disable --now netbird-delayed-update.timer
-sudo rm -f /etc/systemd/system/netbird-delayed-update.timer
-sudo rm -f /etc/systemd/system/netbird-delayed-update.service
-sudo rm -f /usr/local/sbin/netbird-delayed-update.sh
-sudo rm -rf /var/lib/netbird-delayed-update
-sudo systemctl daemon-reload
-```
+~~~bash
+sudo ./netbird-delayed-update-linux.sh --uninstall
+~~~
 
-NetBird itself is **not** removed by this; only the delayed update mechanism.
+To also remove the installed script and all runtime files:
+
+~~~bash
+sudo ./netbird-delayed-update-linux.sh --uninstall --remove-state
+~~~
+
+This will:
+
+- disable and stop `netbird-delayed-update.timer`,
+- remove the `.service` and `.timer` from `/etc/systemd/system`,
+- reload systemd,
+- delete `/usr/local/sbin/netbird-delayed-update.sh` and
+  `/var/lib/netbird-delayed-update` when `--remove-state` is used.
 
 ---
+
+## Versioning
+
+This project uses semantic versioning:
+
+- **0.2.0** – main script `netbird-delayed-update-linux.sh`, logs with retention, JSON state,
+  script self-update and CLI-based systemd installation.
+- **0.1.0** – initial delayed auto-update implementation with a simple installer script
+  and basic systemd units.
+
+See `CHANGELOG.md` for detailed history.
