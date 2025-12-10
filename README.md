@@ -163,9 +163,9 @@ The full log file is stored under:
 
 ## Installing the systemd timer (recommended)
 
-To install with default settings:
+To install with **default** settings:
 
-- delay: 3 days
+- delay: **10 days**
 - random jitter: up to 3600 seconds
 - time: 04:00 (server local time)
 - log retention: 60 days
@@ -180,7 +180,7 @@ To customise the schedule and settings:
 
 ~~~bash
 sudo ./netbird-delayed-update-linux.sh --install \
-  --delay-days 3 \
+  --delay-days 10 \
   --max-random-delay-seconds 3600 \
   --log-retention-days 60 \
   --daily-time "04:00"
@@ -303,3 +303,4 @@ This project uses semantic versioning:
   and basic systemd units.
 
 See `CHANGELOG.md` for detailed history.
+
