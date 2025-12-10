@@ -1,41 +1,6 @@
 #!/usr/bin/env bash
 # Version: 0.2.0
-#
 # NetBird Delayed Auto-Update for Linux (APT + systemd)
-#
-# Delayed / staged auto-update for the NetBird client installed from APT.
-#
-# Features:
-#   - Version aging: new candidate versions must stay in the repository
-#     for N days before they are allowed to be installed.
-#   - No auto-install: only upgrades an already installed NetBird package.
-#   - Systemd integration: daily checks via a timer + oneshot service.
-#   - Log files with retention in /var/lib/netbird-delayed-update.
-#   - Script self-update via GitHub releases (this repo).
-#
-# Usage (examples):
-#   # One-off check with no delay and no random jitter:
-#   sudo ./netbird-delayed-update-linux.sh \
-#     --delay-days 0 \
-#     --max-random-delay-seconds 0 \
-#     --log-retention-days 60
-#
-#   # Install systemd service + timer with defaults:
-#   sudo ./netbird-delayed-update-linux.sh --install
-#
-#   # Install with custom settings:
-#   sudo ./netbird-delayed-update-linux.sh --install \
-#     --delay-days 10 \
-#     --max-random-delay-seconds 3600 \
-#     --log-retention-days 60 \
-#     --daily-time "04:00"
-#
-#   # Uninstall systemd units but keep state/logs:
-#   sudo ./netbird-delayed-update-linux.sh --uninstall
-#
-#   # Uninstall and remove state/logs + installed script:
-#   sudo ./netbird-delayed-update-linux.sh --uninstall --remove-state
-#
 
 set -euo pipefail
 
@@ -49,7 +14,6 @@ SYSTEMD_UNIT_DIR="/etc/systemd/system"
 SERVICE_NAME="netbird-delayed-update.service"
 TIMER_NAME="netbird-delayed-update.timer"
 
-# Script installed path (used by --install, kept for backward compatibility)
 INSTALLED_SCRIPT_PATH="/usr/local/sbin/netbird-delayed-update.sh"
 
 DELAY_DAYS=10
@@ -57,7 +21,6 @@ MAX_RANDOM_DELAY_SECONDS=3600
 DAILY_TIME="04:00"
 LOG_RETENTION_DAYS=60
 
-# Script self-update
 SCRIPT_VERSION="0.2.0"
 SELFUPDATE_REPO="NetHorror/netbird-delayed-auto-update-linux"
 SELFUPDATE_PATH="netbird-delayed-update-linux.sh"
@@ -66,8 +29,7 @@ SELFUPDATE_PATH="netbird-delayed-update-linux.sh"
 
 LOG_FILE=""
 LOG_CLEANED=0
-
-MODE="run"          # run | install | uninstall
+MODE="run"
 REMOVE_STATE=0
 
 # -------------------- Helpers: logging & usage --------------------
@@ -77,13 +39,11 @@ log() {
   ts="$(date -u +"%Y-%m-%d %H:%M:%S")"
   local line="[$ts] $*"
 
-  # Ensure state dir and log file exist
   if [[ -z "${LOG_FILE}" ]]; then
     mkdir -p "${STATE_DIR}"
     LOG_FILE="${LOG_PREFIX}-$(date -u +"%Y%m%d-%H%M%S").log"
   fi
 
-  # One-time log cleanup per run
   if [[ "${LOG_CLEANED}" -eq 0 ]] && [[ "${LOG_RETENTION_DAYS}" -gt 0 ]]; then
     LOG_CLEANED=1
     find "${STATE_DIR}" -maxdepth 1 -type f -name "netbird-delayed-update-*.log" \
@@ -136,7 +96,6 @@ EOF
 # -------------------- Helpers: version comparison --------------------
 
 version_is_newer() {
-  # Returns 0 if $1 (remote) > $2 (local), 1 otherwise.
   local remote="$1"
   local local_ver="$2"
 
@@ -148,7 +107,6 @@ version_is_newer() {
   first="$(printf '%s\n%s\n' "${remote}" "${local_ver}" | LC_ALL=C sort -V | head -n1)"
 
   if [[ "${first}" == "${local_ver}" ]]; then
-    # local is smaller ⇒ remote is newer
     return 0
   fi
 
@@ -158,39 +116,22 @@ version_is_newer() {
 # -------------------- Helpers: state (JSON) --------------------
 
 load_state() {
-  # Outputs three lines on success:
-  #   CandidateVersion
-  #   FirstSeenUtc
-  #   LastCheckUtc
-  # Returns 0 if state is available, 1 otherwise.
   if [[ ! -f "${STATE_FILE}" ]]; then
     return 1
   fi
 
-  local out
-  if ! out="$(python3 - "${STATE_FILE}" <<'PY' 2>/dev/null
-import json, sys
-path = sys.argv[1]
-try:
-    with open(path, "r", encoding="utf-8") as f:
-        data = json.load(f)
-except Exception:
-    sys.exit(1)
+  local candidate first_seen last_check
 
-for key in ("CandidateVersion", "FirstSeenUtc", "LastCheckUtc"):
-    print(data.get(key, ""))
-PY
-)"; then
-    log(f"WARNING: Failed to parse state file '${STATE_FILE}', ignoring it.")
+  candidate="$(grep -o '"CandidateVersion"[[:space:]]*:[[:space:]]*"[^"]*"' "${STATE_FILE}" 2>/dev/null | head -n1 | sed 's/.*"CandidateVersion"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/')" || true
+  first_seen="$(grep -o '"FirstSeenUtc"[[:space:]]*:[[:space:]]*"[^"]*"' "${STATE_FILE}" 2>/dev/null | head -n1 | sed 's/.*"FirstSeenUtc"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/')" || true
+  last_check="$(grep -o '"LastCheckUtc"[[:space:]]*:[[:space:]]*"[^"]*"' "${STATE_FILE}" 2>/dev/null | head -n1 | sed 's/.*"LastCheckUtc"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/')" || true
+
+  if [[ -z "${candidate}" && -z "${first_seen}" && -z "${last_check}" ]]; then
+    log "WARNING: State file '${STATE_FILE}' appears malformed, ignoring it."
     return 1
   fi
 
-  mapfile -t STATE_LINES <<< "${out}"
-  if [[ "${#STATE_LINES[@]}" -lt 3 ]]; then
-    log "WARNING: State file '${STATE_FILE}' is incomplete, ignoring it."
-    return 1
-  fi
-
+  STATE_LINES=("${candidate}" "${first_seen}" "${last_check}")
   return 0
 }
 
@@ -200,26 +141,17 @@ save_state() {
   local last_check="$3"
 
   mkdir -p "${STATE_DIR}"
+  local tmp="${STATE_FILE}.tmp"
 
-  python3 - "${candidate}" "${first_seen}" "${last_check}" "${STATE_FILE}" <<'PY' 2>/dev/null
-import json, sys
-candidate, first_seen, last_check, path = sys.argv[1:5]
-obj = {
-    "CandidateVersion": candidate,
-    "FirstSeenUtc": first_seen,
-    "LastCheckUtc": last_check,
-}
-try:
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(obj, f, indent=2, sort_keys=True)
-except Exception as e:
-    sys.stderr.write(f"Failed to write state file '{path}': {e}\n")
-    sys.exit(1)
-PY
-
-  if [[ $? -ne 0 ]]; then
+  {
+    printf '{\n'
+    printf '  "CandidateVersion": "%s",\n' "${candidate}"
+    printf '  "FirstSeenUtc": "%s",\n' "${first_seen}"
+    printf '  "LastCheckUtc": "%s"\n' "${last_check}"
+    printf '}\n'
+  } >"${tmp}" && mv "${tmp}" "${STATE_FILE}" || {
     log "WARNING: Failed to write state file '${STATE_FILE}'."
-  fi
+  }
 }
 
 compute_age_days() {
@@ -232,7 +164,6 @@ compute_age_days() {
 
   local first_epoch
   if ! first_epoch="$(date -u -d "${first_seen}" +%s 2>/dev/null)"; then
-    # Invalid timestamp in state ⇒ treat as 0 days old.
     echo "0"
     return
   fi
@@ -288,7 +219,6 @@ self_update() {
     return 0
   fi
 
-  # Try git pull if inside a git repo
   if command -v git >/dev/null 2>&1; then
     local repo_root
     if repo_root="$(cd "$(dirname "${script_path}")" && git rev-parse --show-toplevel 2>/dev/null)"; then
@@ -302,7 +232,6 @@ self_update() {
     fi
   fi
 
-  # Fallback: download from raw.githubusercontent.com
   local raw_url="https://raw.githubusercontent.com/${SELFUPDATE_REPO}/${remote_tag}/${SELFUPDATE_PATH}"
   log "Self-update: downloading script from ${raw_url}"
 
@@ -348,7 +277,6 @@ install_systemd_units() {
 
   echo "Installing NetBird delayed auto-update (systemd)..."
 
-  # Copy script to a stable location
   install -D -m 0755 "${src}" "${INSTALLED_SCRIPT_PATH}"
 
   mkdir -p "${STATE_DIR}"
@@ -385,10 +313,7 @@ EOF
   systemctl daemon-reload
   systemctl enable --now "${TIMER_NAME}"
 
-  echo "Systemd service and timer installed:"
-  echo "  Service: ${SYSTEMD_UNIT_DIR}/${SERVICE_NAME}"
-  echo "  Timer:   ${SYSTEMD_UNIT_DIR}/${TIMER_NAME}"
-  echo "Daily schedule: ${DAILY_TIME} with up to ${MAX_RANDOM_DELAY_SECONDS}s random delay."
+  echo "Systemd service and timer installed."
 }
 
 uninstall_systemd_units() {
@@ -454,7 +379,7 @@ perform_update() {
   local candidate_ver="$2"
   local age_days="$3"
 
-  log "Upgrading NetBird: ${installed_ver} → ${candidate_ver} (version has matured for ${age_days} day(s))."
+  log "Upgrading NetBird: ${installed_ver} -> ${candidate_ver} (version has matured for ${age_days} day(s))."
 
   export DEBIAN_FRONTEND=noninteractive
 
@@ -462,7 +387,6 @@ perform_update() {
     log "WARNING: 'apt-get update' failed; continuing with cached metadata."
   fi
 
-  # Try upgrading netbird + netbird-ui, then fall back to netbird only.
   if ! apt-get install --only-upgrade -y netbird netbird-ui 2>/dev/null; then
     log "WARNING: Failed to upgrade 'netbird-ui' (possibly not installed). Retrying with 'netbird' only."
     apt-get install --only-upgrade -y netbird
@@ -473,7 +397,6 @@ perform_update() {
 }
 
 run_delayed_update() {
-  # Optional random spread inside the script itself.
   if [[ "${MAX_RANDOM_DELAY_SECONDS}" -gt 0 ]]; then
     local sleep_for=$(( RANDOM % (MAX_RANDOM_DELAY_SECONDS + 1) ))
     log "Sleeping for ${sleep_for} second(s) before running checks (random jitter)."
@@ -498,7 +421,6 @@ run_delayed_update() {
     return 0
   fi
 
-  # Compare versions; if installed >= candidate, exit.
   if dpkg --compare-versions "${installed_ver}" ge "${candidate_ver}"; then
     log "Local version ${installed_ver} is already >= repository version ${candidate_ver}. No update needed."
     return 0
@@ -518,24 +440,21 @@ run_delayed_update() {
   fi
 
   if [[ -z "${state_candidate}" || "${state_candidate}" != "${candidate_ver}" ]]; then
-    # New candidate version detected.
     log "New candidate version detected: ${candidate_ver}. First seen now, waiting ${DELAY_DAYS} day(s)."
     save_state "${candidate_ver}" "${now_utc}" "${now_utc}"
     return 0
   fi
 
-  # Candidate unchanged; compute age.
   local age_days
   age_days="$(compute_age_days "${state_first_seen}")"
   log "Candidate version ${candidate_ver} has been in the repository for approximately ${age_days} day(s)."
 
   if (( age_days < DELAY_DAYS )); then
-    log "Age is less than ${DELAY_DAYS} day(s) – deferring update."
+    log "Age is less than ${DELAY_DAYS} day(s) - deferring update."
     save_state "${candidate_ver}" "${state_first_seen}" "${now_utc}"
     return 0
   fi
 
-  # Age threshold reached; perform upgrade.
   perform_update "${installed_ver}" "${candidate_ver}" "${age_days}"
   save_state "${candidate_ver}" "${state_first_seen}" "${now_utc}"
 }
