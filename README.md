@@ -1,6 +1,6 @@
 # NetBird Delayed Auto-Update
 
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE) ![Platform: Linux](https://img.shields.io/badge/platform-Linux-informational) ![Init: systemd](https://img.shields.io/badge/init-systemd-blue) ![Shell: bash](https://img.shields.io/badge/shell-bash-green)
+[![License: MIT](https://img.shields.io/badge/license-MIT-yellow.svg)](LICENSE) ![Platform: Linux](https://img.shields.io/badge/platform-Linux-informational) ![Init: systemd](https://img.shields.io/badge/init-systemd-blue) ![Shell: bash](https://img.shields.io/badge/shell-bash-green)
 
 Helper script that implements **delayed / staged** updates for the NetBird client
 installed from an APT repository.
