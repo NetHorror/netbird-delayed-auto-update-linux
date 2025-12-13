@@ -1,11 +1,20 @@
-# Changelog
-
 All notable changes to this project will be documented in this file.
 
-The format is inspired by https://keepachangelog.com/en/1.0.0/,
-and this project uses semantic versioning.
-
 ---
+
+## [0.2.1] – 2025-12-13
+
+### Added
+- Concurrency protection using `flock` (if available) to prevent parallel runs and avoid APT/dpkg lock conflicts.
+- A `User-Agent` header for GitHub API calls and raw downloads to improve reliability.
+- Input validation for numeric flags (`--delay-days`, `--max-random-delay-seconds`, `--log-retention-days`).
+
+### Changed
+- Systemd installation no longer applies random delay twice:
+  - the **timer** uses `RandomizedDelaySec`,
+  - the **service** runs the script with `--max-random-delay-seconds 0`.
+- Removed unused `Environment=` lines from the installed systemd service unit.
+- `apt-get update` is now called without `-y` (best-effort).
 
 ## [0.2.0] – 2025-12-10
 
