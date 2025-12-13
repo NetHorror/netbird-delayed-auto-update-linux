@@ -13,11 +13,6 @@ version must "age" for a configurable number of days before it is allowed to
 be installed. Short-lived or broken releases that are quickly replaced in the
 repository will never reach your machines.
 
-This project mirrors the behaviour of the Windows and macOS delayed update scripts,
-but is tailored to Linux with APT and systemd.
-
-Current script version: **0.2.1**
-
 ---
 
 ## Quick start
