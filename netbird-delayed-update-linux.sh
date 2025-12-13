@@ -99,13 +99,42 @@ Examples:
 EOF
 }
 
+# -------------------- Helpers: validation --------------------
+
+validate_time_hhmm() {
+  local t="$1"
+  if [[ ! "${t}" =~ ^([0-1][0-9]|2[0-3]):[0-5][0-9]$ ]]; then
+    echo "Invalid time format '${t}'. Use HH:MM (24-hour), e.g. 04:00." >&2
+    exit 1
+  fi
+}
+
+is_nonneg_int() {
+  [[ "$1" =~ ^[0-9]+$ ]]
+}
+
+validate_numeric_args() {
+  if ! is_nonneg_int "${DELAY_DAYS}"; then
+    echo "Invalid --delay-days '${DELAY_DAYS}'. Expected a non-negative integer." >&2
+    exit 1
+  fi
+  if ! is_nonneg_int "${MAX_RANDOM_DELAY_SECONDS}"; then
+    echo "Invalid --max-random-delay-seconds '${MAX_RANDOM_DELAY_SECONDS}'. Expected a non-negative integer." >&2
+    exit 1
+  fi
+  if ! is_nonneg_int "${LOG_RETENTION_DAYS}"; then
+    echo "Invalid --log-retention-days '${LOG_RETENTION_DAYS}'. Expected a non-negative integer." >&2
+    exit 1
+  fi
+}
+
 # -------------------- Helpers: version comparison --------------------
 
 version_is_newer() {
   local a="$1"
   local b="$2"
   # returns 0 if a > b
-  dpkg --compare-versions "${a}" gt "${b}"
+  dpkg --compare-versions "${a}" gt "${b}" 2>/dev/null
 }
 
 # -------------------- Helpers: state (JSON) --------------------
@@ -176,6 +205,14 @@ compute_age_days() {
 
 # -------------------- Helpers: self-update --------------------
 
+extract_github_tag_name() {
+  # Extract "tag_name" from GitHub release JSON (works for one-line and pretty JSON).
+  local json="$1"
+  local one_line
+  one_line="$(printf '%s' "${json}" | tr -d '\n\r')"
+  printf '%s' "${one_line}" | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p'
+}
+
 self_update() {
   if [[ -z "${SELFUPDATE_REPO}" ]]; then
     return 0
@@ -191,12 +228,20 @@ self_update() {
   fi
 
   local remote_tag
-  remote_tag="$(printf '%s\n' "${json}" | awk -F'"' '/"tag_name"/ {print $4; exit}')"
+  remote_tag="$(extract_github_tag_name "${json}" | head -n1 || true)"
+
   if [[ -z "${remote_tag}" ]]; then
-    log "Self-update: could not parse tag_name from GitHub response."
+    log "Self-update: could not parse tag_name from GitHub response, skipping."
     return 0
   fi
 
+  # Defensive validation: avoid treating URLs or unexpected strings as versions.
+  if [[ "${remote_tag}" == http* || "${remote_tag}" == *"/"* ]]; then
+    log "Self-update: parsed tag_name looks invalid ('${remote_tag}'), skipping."
+    return 0
+  fi
+
+  # Harmless if tags never have 'v' prefix.
   remote_tag="${remote_tag#v}"
 
   if ! version_is_newer "${remote_tag}" "${SCRIPT_VERSION}"; then
@@ -253,33 +298,6 @@ self_update() {
 }
 
 # -------------------- Helpers: systemd install/uninstall --------------------
-
-validate_time_hhmm() {
-  local t="$1"
-  if [[ ! "${t}" =~ ^([0-1][0-9]|2[0-3]):[0-5][0-9]$ ]]; then
-    echo "Invalid time format '${t}'. Use HH:MM (24-hour), e.g. 04:00." >&2
-    exit 1
-  fi
-}
-
-is_nonneg_int() {
-  [[ "$1" =~ ^[0-9]+$ ]]
-}
-
-validate_numeric_args() {
-  if ! is_nonneg_int "${DELAY_DAYS}"; then
-    echo "Invalid --delay-days '${DELAY_DAYS}'. Expected a non-negative integer." >&2
-    exit 1
-  fi
-  if ! is_nonneg_int "${MAX_RANDOM_DELAY_SECONDS}"; then
-    echo "Invalid --max-random-delay-seconds '${MAX_RANDOM_DELAY_SECONDS}'. Expected a non-negative integer." >&2
-    exit 1
-  fi
-  if ! is_nonneg_int "${LOG_RETENTION_DAYS}"; then
-    echo "Invalid --log-retention-days '${LOG_RETENTION_DAYS}'. Expected a non-negative integer." >&2
-    exit 1
-  fi
-}
 
 install_systemd_units() {
   validate_time_hhmm "${DAILY_TIME}"
@@ -495,34 +513,22 @@ parse_args() {
         shift
         ;;
       --delay-days)
-        if [[ $# -lt 2 ]]; then
-          echo "Missing value for --delay-days" >&2
-          exit 1
-        fi
+        [[ $# -ge 2 ]] || { echo "Missing value for --delay-days" >&2; exit 1; }
         DELAY_DAYS="$2"
         shift 2
         ;;
       --max-random-delay-seconds)
-        if [[ $# -lt 2 ]]; then
-          echo "Missing value for --max-random-delay-seconds" >&2
-          exit 1
-        fi
+        [[ $# -ge 2 ]] || { echo "Missing value for --max-random-delay-seconds" >&2; exit 1; }
         MAX_RANDOM_DELAY_SECONDS="$2"
         shift 2
         ;;
       --daily-time)
-        if [[ $# -lt 2 ]]; then
-          echo "Missing value for --daily-time" >&2
-          exit 1
-        fi
+        [[ $# -ge 2 ]] || { echo "Missing value for --daily-time" >&2; exit 1; }
         DAILY_TIME="$2"
         shift 2
         ;;
       --log-retention-days)
-        if [[ $# -lt 2 ]]; then
-          echo "Missing value for --log-retention-days" >&2
-          exit 1
-        fi
+        [[ $# -ge 2 ]] || { echo "Missing value for --log-retention-days" >&2; exit 1; }
         LOG_RETENTION_DAYS="$2"
         shift 2
         ;;
