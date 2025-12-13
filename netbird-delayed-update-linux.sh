@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Version: 0.2.0
+# Version: 0.2.1
 # NetBird Delayed Auto-Update for Linux (APT + systemd)
 
 set -euo pipefail
@@ -21,7 +21,8 @@ MAX_RANDOM_DELAY_SECONDS=3600
 DAILY_TIME="04:00"
 LOG_RETENTION_DAYS=60
 
-SCRIPT_VERSION="0.2.0"
+SCRIPT_VERSION="0.2.1"
+
 SELFUPDATE_REPO="NetHorror/netbird-delayed-auto-update-linux"
 SELFUPDATE_PATH="netbird-delayed-update-linux.sh"
 
@@ -57,38 +58,43 @@ log() {
 usage() {
   cat <<EOF
 NetBird Delayed Auto-Update for Linux (APT + systemd)
-Current script version: ${SCRIPT_VERSION}
+
+Usage:
+  ${0##*/} [--install|-i] [--uninstall|-u] [--remove-state]
+           [--delay-days N] [--max-random-delay-seconds N]
+           [--daily-time "HH:MM"] [--log-retention-days N]
+           [--version] [--help|-h]
 
 Modes:
-  --install, -i        Install or update systemd service + timer.
-  --uninstall, -u      Remove systemd service + timer (optionally state/logs).
-  (no mode)            Run a single delayed-update check.
+  --install, -i
+      Install/update systemd service and timer (runs daily).
+  --uninstall, -u
+      Remove systemd service and timer.
+  --remove-state
+      When used with --uninstall, also removes:
+        - ${INSTALLED_SCRIPT_PATH}
+        - ${STATE_DIR}
 
-Common options:
-  --delay-days N       Minimum age (in days) for a new candidate version.
-                       Default: ${DELAY_DAYS}
+Behaviour:
+  --delay-days N
+      Minimum age (days) a new APT candidate version must remain unchanged
+      before it is allowed to be upgraded. Default: ${DELAY_DAYS}
   --max-random-delay-seconds N
-                       Max random delay (seconds) before each run.
-                       Default: ${MAX_RANDOM_DELAY_SECONDS}
+      Random jitter (sleep) before running checks. Default: ${MAX_RANDOM_DELAY_SECONDS}
+      NOTE: When installed via --install, the systemd timer already uses RandomizedDelaySec,
+            so the installed service runs the script with --max-random-delay-seconds 0.
+  --daily-time "HH:MM"
+      Time of day for the daily systemd timer. Default: ${DAILY_TIME}
   --log-retention-days N
-                       Keep per-run log files for N days (0 = no cleanup).
-                       Default: ${LOG_RETENTION_DAYS}
-  --daily-time "HH:MM" Daily time for systemd timer (local time).
-                       Used with --install; default: ${DAILY_TIME}
-
-Install / uninstall options:
-  --install, -i        Install systemd .service and .timer.
-  --uninstall, -u      Disable + remove systemd units.
-  --remove-state       When used with --uninstall, also remove:
-                       - ${INSTALLED_SCRIPT_PATH}
-                       - ${STATE_DIR}
+      Delete log files older than N days. Default: ${LOG_RETENTION_DAYS}
+      Use 0 to disable log cleanup.
 
 Examples:
-  sudo ./netbird-delayed-update-linux.sh --install
-  sudo ./netbird-delayed-update-linux.sh --install \\
-    --delay-days 10 --max-random-delay-seconds 3600 --daily-time "04:00"
-  sudo ./netbird-delayed-update-linux.sh --uninstall --remove-state
-  sudo ./netbird-delayed-update-linux.sh --delay-days 0 --max-random-delay-seconds 0
+  One-off run, no delay and no jitter:
+    sudo ./netbird-delayed-update-linux.sh --delay-days 0 --max-random-delay-seconds 0
+
+  Install systemd timer with custom settings:
+    sudo ./netbird-delayed-update-linux.sh --install --delay-days 10 --max-random-delay-seconds 3600 --daily-time "04:00"
 
 EOF
 }
@@ -96,21 +102,10 @@ EOF
 # -------------------- Helpers: version comparison --------------------
 
 version_is_newer() {
-  local remote="$1"
-  local local_ver="$2"
-
-  if [[ "${remote}" == "${local_ver}" ]]; then
-    return 1
-  fi
-
-  local first
-  first="$(printf '%s\n%s\n' "${remote}" "${local_ver}" | LC_ALL=C sort -V | head -n1)"
-
-  if [[ "${first}" == "${local_ver}" ]]; then
-    return 0
-  fi
-
-  return 1
+  local a="$1"
+  local b="$2"
+  # returns 0 if a > b
+  dpkg --compare-versions "${a}" gt "${b}"
 }
 
 # -------------------- Helpers: state (JSON) --------------------
@@ -190,7 +185,7 @@ self_update() {
 
   local api_url="https://api.github.com/repos/${SELFUPDATE_REPO}/releases/latest"
   local json
-  if ! json="$(curl -fsSL "${api_url}" 2>/dev/null)"; then
+  if ! json="$(curl -fsSL -H "User-Agent: netbird-delayed-update-linux/${SCRIPT_VERSION}" "${api_url}" 2>/dev/null)"; then
     log "Self-update: failed to query GitHub API, skipping."
     return 0
   fi
@@ -241,7 +236,7 @@ self_update() {
     return 0
   }
 
-  if ! curl -fsSL "${raw_url}" -o "${tmp}" 2>/dev/null; then
+  if ! curl -fsSL -H "User-Agent: netbird-delayed-update-linux/${SCRIPT_VERSION}" "${raw_url}" -o "${tmp}" 2>/dev/null; then
     log "Self-update: failed to download script from raw GitHub."
     rm -f "${tmp}" || true
     return 0
@@ -263,6 +258,25 @@ validate_time_hhmm() {
   local t="$1"
   if [[ ! "${t}" =~ ^([0-1][0-9]|2[0-3]):[0-5][0-9]$ ]]; then
     echo "Invalid time format '${t}'. Use HH:MM (24-hour), e.g. 04:00." >&2
+    exit 1
+  fi
+}
+
+is_nonneg_int() {
+  [[ "$1" =~ ^[0-9]+$ ]]
+}
+
+validate_numeric_args() {
+  if ! is_nonneg_int "${DELAY_DAYS}"; then
+    echo "Invalid --delay-days '${DELAY_DAYS}'. Expected a non-negative integer." >&2
+    exit 1
+  fi
+  if ! is_nonneg_int "${MAX_RANDOM_DELAY_SECONDS}"; then
+    echo "Invalid --max-random-delay-seconds '${MAX_RANDOM_DELAY_SECONDS}'. Expected a non-negative integer." >&2
+    exit 1
+  fi
+  if ! is_nonneg_int "${LOG_RETENTION_DAYS}"; then
+    echo "Invalid --log-retention-days '${LOG_RETENTION_DAYS}'. Expected a non-negative integer." >&2
     exit 1
   fi
 }
@@ -290,9 +304,7 @@ After=network-online.target
 
 [Service]
 Type=oneshot
-Environment=MIN_AGE_DAYS=${DELAY_DAYS}
-Environment=LOG_RETENTION_DAYS=${LOG_RETENTION_DAYS}
-ExecStart=${INSTALLED_SCRIPT_PATH} --delay-days ${DELAY_DAYS} --max-random-delay-seconds ${MAX_RANDOM_DELAY_SECONDS} --log-retention-days ${LOG_RETENTION_DAYS}
+ExecStart=${INSTALLED_SCRIPT_PATH} --delay-days ${DELAY_DAYS} --max-random-delay-seconds 0 --log-retention-days ${LOG_RETENTION_DAYS}
 Nice=10
 EOF
 
@@ -383,7 +395,7 @@ perform_update() {
 
   export DEBIAN_FRONTEND=noninteractive
 
-  if ! apt-get update -y 2>/dev/null; then
+  if ! apt-get update 2>/dev/null; then
     log "WARNING: 'apt-get update' failed; continuing with cached metadata."
   fi
 
@@ -397,6 +409,16 @@ perform_update() {
 }
 
 run_delayed_update() {
+  # Prevent concurrent runs (APT/dpkg lock issues)
+  if command -v flock >/dev/null 2>&1; then
+    mkdir -p "${STATE_DIR}"
+    exec 9>"${STATE_DIR}/lock"
+    if ! flock -n 9; then
+      log "Another instance is running; exiting."
+      return 0
+    fi
+  fi
+
   if [[ "${MAX_RANDOM_DELAY_SECONDS}" -gt 0 ]]; then
     local sleep_for=$(( RANDOM % (MAX_RANDOM_DELAY_SECONDS + 1) ))
     log "Sleeping for ${sleep_for} second(s) before running checks (random jitter)."
@@ -407,7 +429,6 @@ run_delayed_update() {
 
   local installed_ver
   installed_ver="$(get_installed_version)"
-
   if [[ -z "${installed_ver}" ]]; then
     log "NetBird (package 'netbird') is not installed. Auto-install is not performed."
     return 0
@@ -415,7 +436,6 @@ run_delayed_update() {
 
   local candidate_ver
   candidate_ver="$(get_candidate_version)"
-
   if [[ -z "${candidate_ver}" || "${candidate_ver}" == "(none)" ]]; then
     log "No candidate version found in APT for package 'netbird'. Nothing to do."
     return 0
@@ -429,10 +449,7 @@ run_delayed_update() {
   local now_utc
   now_utc="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 
-  local state_candidate=""
-  local state_first_seen=""
-  local state_last_check=""
-
+  local state_candidate="" state_first_seen="" state_last_check=""
   if load_state; then
     state_candidate="${STATE_LINES[0]}"
     state_first_seen="${STATE_LINES[1]}"
@@ -447,6 +464,7 @@ run_delayed_update() {
 
   local age_days
   age_days="$(compute_age_days "${state_first_seen}")"
+
   log "Candidate version ${candidate_ver} has been in the repository for approximately ${age_days} day(s)."
 
   if (( age_days < DELAY_DAYS )); then
@@ -529,6 +547,7 @@ parse_args() {
 
 main() {
   parse_args "$@"
+  validate_numeric_args
 
   case "${MODE}" in
     install)
