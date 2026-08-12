@@ -284,4 +284,11 @@ This will:
 
 ---
 
+## Related projects
+
+- Windows (Chocolatey + Scheduled Task): [`NetHorror/netbird-delayed-auto-update-windows`](https://github.com/NetHorror/netbird-delayed-auto-update-windows)
+- macOS (launchd): [`NetHorror/netbird-delayed-auto-update-macos`](https://github.com/NetHorror/netbird-delayed-auto-update-macos)
+
+---
+
 See `CHANGELOG.md` for detailed history.

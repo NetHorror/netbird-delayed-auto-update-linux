@@ -2,6 +2,15 @@ All notable changes to this project will be documented in this file.
 
 ---
 
+## [0.2.2] – 2026-08-12
+
+### Added
+- CI workflow (GitHub Actions): syntax check, ShellCheck, an install/uninstall systemd unit smoke test, and a check that release tags match `SCRIPT_VERSION`.
+- `README.md` cross-links to the Windows and macOS sibling projects.
+
+### Changed
+- Self-update is now safer: the downloaded script is sanity-checked (must start with the expected shebang and declare the requested `SCRIPT_VERSION`) before being applied, the previous script is backed up (`.bak-<timestamp>`) before being overwritten, and the temporary download now lives in the same directory as the target script (instead of `/tmp`) so the final `mv` is an atomic rename instead of a cross-filesystem copy.
+
 ## [0.2.1] – 2025-12-13
 
 ### Added

@@ -21,7 +21,7 @@ MAX_RANDOM_DELAY_SECONDS=3600
 DAILY_TIME="04:00"
 LOG_RETENTION_DAYS=60
 
-SCRIPT_VERSION="0.2.1"
+SCRIPT_VERSION="0.2.2"
 
 SELFUPDATE_REPO="NetHorror/netbird-delayed-auto-update-linux"
 SELFUPDATE_PATH="netbird-delayed-update-linux.sh"
@@ -275,17 +275,42 @@ self_update() {
   local raw_url="https://raw.githubusercontent.com/${SELFUPDATE_REPO}/${remote_tag}/${SELFUPDATE_PATH}"
   log "Self-update: downloading script from ${raw_url}"
 
-  local tmp
-  tmp="$(mktemp "/tmp/netbird-delayed-update-linux.XXXXXX")" || {
-    log "Self-update: failed to create temporary file."
+  # Temp file MUST be in the same directory as the target so the final mv is
+  # an atomic rename (mktemp under /tmp can land on a different filesystem,
+  # turning mv into a non-atomic copy+unlink that can leave a truncated
+  # script behind if interrupted).
+  local script_dir tmp backup
+  script_dir="$(dirname "${script_path}")"
+  tmp="$(mktemp "${script_dir}/.netbird-delayed-update-linux.new.XXXXXX")" || {
+    log "Self-update: failed to create temporary file in ${script_dir}."
     return 0
   }
 
-  if ! curl -fsSL -H "User-Agent: netbird-delayed-update-linux/${SCRIPT_VERSION}" "${raw_url}" -o "${tmp}" 2>/dev/null; then
+  if ! curl -fsSL --retry 3 --connect-timeout 10 --max-time 60 \
+      -H "User-Agent: netbird-delayed-update-linux/${SCRIPT_VERSION}" "${raw_url}" -o "${tmp}" 2>/dev/null; then
     log "Self-update: failed to download script from raw GitHub."
     rm -f "${tmp}" || true
     return 0
   fi
+
+  if ! head -n 1 "${tmp}" | grep -q '^#!/usr/bin/env bash'; then
+    log "Self-update: downloaded file doesn't look like a bash script; aborting."
+    rm -f "${tmp}" || true
+    return 0
+  fi
+
+  # Sanity check: ensure the downloaded script's SCRIPT_VERSION matches the tag
+  # we asked for, so a truncated/wrong response doesn't get installed silently.
+  if ! grep -q "SCRIPT_VERSION=\"${remote_tag}\"" "${tmp}" 2>/dev/null; then
+    log "Self-update: sanity check failed (SCRIPT_VERSION mismatch in downloaded file); aborting."
+    rm -f "${tmp}" || true
+    return 0
+  fi
+
+  backup="${script_path}.bak-$(date -u +%Y%m%d-%H%M%S)"
+  cp -f "${script_path}" "${backup}" 2>/dev/null || true
+
+  chmod 755 "${tmp}" 2>/dev/null || true
 
   if ! mv "${tmp}" "${script_path}"; then
     log "Self-update: failed to overwrite script at '${script_path}'."
@@ -294,7 +319,7 @@ self_update() {
   fi
 
   chmod +x "${script_path}" || true
-  log "Self-update: script updated to version ${remote_tag}. New version will be used on the next run."
+  log "Self-update: script updated to version ${remote_tag} (backup: ${backup}). New version will be used on the next run."
 }
 
 # -------------------- Helpers: systemd install/uninstall --------------------
