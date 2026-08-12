@@ -19,6 +19,7 @@ jobs:
         uses: ludeeus/action-shellcheck@master
         with:
           scandir: "."
+          severity: error
 
   smoke-test:
     runs-on: ubuntu-latest
