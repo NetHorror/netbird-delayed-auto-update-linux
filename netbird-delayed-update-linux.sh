@@ -493,7 +493,7 @@ ensure_netbird_client() {
     log "NetBird not found; installing it (--install-client)."
   elif [[ -t 0 ]]; then
     local answer=""
-    if ! read -r -p "NetBird не найден. Установить сейчас? [Y/n] " answer; then
+    if ! read -r -p "NetBird not found. Install now? [Y/n] " answer; then
       answer="n"
     fi
     case "${answer}" in
