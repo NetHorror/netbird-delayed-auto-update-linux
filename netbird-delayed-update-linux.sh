@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Version: 0.2.1
+# Version: 0.3.0
 # NetBird Delayed Auto-Update for Linux (APT + systemd)
 
 set -euo pipefail
@@ -21,10 +21,17 @@ MAX_RANDOM_DELAY_SECONDS=3600
 DAILY_TIME="04:00"
 LOG_RETENTION_DAYS=60
 
-SCRIPT_VERSION="0.2.2"
+SCRIPT_VERSION="0.3.0"
 
 SELFUPDATE_REPO="NetHorror/netbird-delayed-auto-update-linux"
 SELFUPDATE_PATH="netbird-delayed-update-linux.sh"
+
+# Official NetBird APT repository (used only when installing the client).
+NETBIRD_APT_URL="https://pkgs.netbird.io/debian"
+NETBIRD_KEY_URL="https://pkgs.netbird.io/debian/public.key"
+NETBIRD_KEY_FPR="EFE37DF047DF7CCDF1FC54FA83F79AD029778355"
+NETBIRD_KEYRING="/usr/share/keyrings/netbird-archive-keyring.gpg"
+NETBIRD_APT_LIST="/etc/apt/sources.list.d/netbird.list"
 
 # -------------------- Runtime globals --------------------
 
@@ -32,6 +39,8 @@ LOG_FILE=""
 LOG_CLEANED=0
 MODE="run"
 REMOVE_STATE=0
+INSTALL_CLIENT=0
+SELF_UPDATE=1
 
 # -------------------- Helpers: logging & usage --------------------
 
@@ -63,6 +72,7 @@ Usage:
   ${0##*/} [--install|-i] [--uninstall|-u] [--remove-state]
            [--delay-days N] [--max-random-delay-seconds N]
            [--daily-time "HH:MM"] [--log-retention-days N]
+           [--install-client] [--no-self-update]
            [--version] [--help|-h]
 
 Modes:
@@ -88,6 +98,16 @@ Behaviour:
   --log-retention-days N
       Delete log files older than N days. Default: ${LOG_RETENTION_DAYS}
       Use 0 to disable log cleanup.
+  --install-client
+      If NetBird is not installed, install it from the official APT repository
+      (${NETBIRD_APT_URL}) without asking. Without this flag an interactive run asks
+      first, and a non-interactive run (systemd timer) only logs a warning.
+      The first installation installs the current latest version; the delay
+      applies only to later updates.
+  --no-self-update
+      Do not check GitHub releases for a newer version of this script.
+      Self-update is enabled by default and only applies a release whose
+      script matches the SHA256SUMS asset.
 
 Examples:
   One-off run, no delay and no jitter:
@@ -95,6 +115,9 @@ Examples:
 
   Install systemd timer with custom settings:
     sudo ./netbird-delayed-update-linux.sh --install --delay-days 10 --max-random-delay-seconds 3600 --daily-time "04:00"
+
+  Unattended setup on a fresh machine (install NetBird + timer):
+    sudo ./netbird-delayed-update-linux.sh --install --install-client
 
 EOF
 }
@@ -213,39 +236,63 @@ extract_github_tag_name() {
   printf '%s' "${one_line}" | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p'
 }
 
+extract_asset_url() {
+  # Print the browser_download_url of the release asset named exactly "$2".
+  # Only URLs pointing at this repository's release downloads are accepted.
+  local json="$1"
+  local name="$2"
+  local prefix="https://github.com/${SELFUPDATE_REPO}/releases/download/"
+  printf '%s' "${json}" \
+    | grep -o '"browser_download_url"[[:space:]]*:[[:space:]]*"[^"]*"' \
+    | sed 's/.*:[[:space:]]*"\([^"]*\)"$/\1/' \
+    | awk -v p="${prefix}" -v n="/${name}" \
+        'index($0, p) == 1 && substr($0, length($0) - length(n) + 1) == n { print; exit }'
+}
+
+self_update_cleanup() {
+  rm -f "$@" 2>/dev/null || true
+}
+
 self_update() {
-  if [[ -z "${SELFUPDATE_REPO}" ]]; then
+  if [[ "${SELF_UPDATE}" -ne 1 || -z "${SELFUPDATE_REPO}" ]]; then
+    log "Self-update: disabled (--no-self-update)."
+    return 0
+  fi
+
+  if ! command -v curl >/dev/null 2>&1 || ! command -v sha256sum >/dev/null 2>&1; then
+    log "Self-update: curl or sha256sum not available, skipping."
     return 0
   fi
 
   log "Self-update: checking latest release for ${SELFUPDATE_REPO} (current ${SCRIPT_VERSION})."
 
+  local ua="netbird-delayed-update-linux/${SCRIPT_VERSION}"
   local api_url="https://api.github.com/repos/${SELFUPDATE_REPO}/releases/latest"
   local json
-  if ! json="$(curl -fsSL -H "User-Agent: netbird-delayed-update-linux/${SCRIPT_VERSION}" "${api_url}" 2>/dev/null)"; then
+  if ! json="$(curl -fsSL --connect-timeout 10 --max-time 60 -H "User-Agent: ${ua}" "${api_url}" 2>/dev/null)"; then
     log "Self-update: failed to query GitHub API, skipping."
     return 0
   fi
 
-  local remote_tag
+  local remote_tag remote_ver
   remote_tag="$(extract_github_tag_name "${json}" | head -n1 || true)"
+  remote_ver="${remote_tag#v}"
 
-  if [[ -z "${remote_tag}" ]]; then
-    log "Self-update: could not parse tag_name from GitHub response, skipping."
+  if [[ ! "${remote_ver}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    log "Self-update: latest release tag '${remote_tag}' is not a valid version (X.Y.Z), skipping."
     return 0
   fi
 
-  # Defensive validation: avoid treating URLs or unexpected strings as versions.
-  if [[ "${remote_tag}" == http* || "${remote_tag}" == *"/"* ]]; then
-    log "Self-update: parsed tag_name looks invalid ('${remote_tag}'), skipping."
+  if ! version_is_newer "${remote_ver}" "${SCRIPT_VERSION}"; then
+    log "Self-update: no newer version available (latest ${remote_ver})."
     return 0
   fi
 
-  # Harmless if tags never have 'v' prefix.
-  remote_tag="${remote_tag#v}"
-
-  if ! version_is_newer "${remote_tag}" "${SCRIPT_VERSION}"; then
-    log "Self-update: no newer version available (latest ${remote_tag})."
+  local script_url sums_url
+  script_url="$(extract_asset_url "${json}" "${SELFUPDATE_PATH}" || true)"
+  sums_url="$(extract_asset_url "${json}" "SHA256SUMS" || true)"
+  if [[ -z "${script_url}" || -z "${sums_url}" ]]; then
+    log "Self-update: release ${remote_tag} lacks '${SELFUPDATE_PATH}' and/or 'SHA256SUMS' assets; not updating."
     return 0
   fi
 
@@ -254,72 +301,218 @@ self_update() {
     script_path="$0"
   fi
 
-  if [[ ! -w "${script_path}" ]]; then
-    log "Self-update: script path '${script_path}' is not writable, skipping."
+  local script_dir
+  script_dir="$(dirname "${script_path}")"
+  if [[ ! -w "${script_path}" || ! -w "${script_dir}" ]]; then
+    log "Self-update: '${script_path}' or its directory is not writable, skipping."
     return 0
   fi
 
-  if command -v git >/dev/null 2>&1; then
-    local repo_root
-    if repo_root="$(cd "$(dirname "${script_path}")" && git rev-parse --show-toplevel 2>/dev/null)"; then
-      log "Self-update: script is inside a git repository; trying 'git pull --ff-only'."
-      if (cd "${repo_root}" && git pull --ff-only); then
-        log "Self-update: git pull completed; new version will be used on the next run."
-        return 0
-      else
-        log "Self-update: git pull failed, falling back to raw download."
-      fi
+  # Temp files MUST be in the same directory as the target so the final mv is
+  # an atomic rename (not a cross-filesystem copy that could leave a truncated
+  # script behind if interrupted).
+  local tmp tmp_sums
+  if ! tmp="$(mktemp "${script_dir}/.netbird-delayed-update-linux.new.XXXXXX")"; then
+    log "Self-update: failed to create temporary file in ${script_dir}."
+    return 0
+  fi
+  if ! tmp_sums="$(mktemp "${script_dir}/.netbird-delayed-update-linux.sums.XXXXXX")"; then
+    log "Self-update: failed to create temporary file in ${script_dir}."
+    self_update_cleanup "${tmp}"
+    return 0
+  fi
+
+  log "Self-update: downloading ${script_url}"
+  if ! curl -fsSL --retry 3 --connect-timeout 10 --max-time 60 \
+      -H "User-Agent: ${ua}" "${script_url}" -o "${tmp}" 2>/dev/null \
+     || ! curl -fsSL --retry 3 --connect-timeout 10 --max-time 60 \
+      -H "User-Agent: ${ua}" "${sums_url}" -o "${tmp_sums}" 2>/dev/null; then
+    log "Self-update: failed to download release assets; current script left unchanged."
+    self_update_cleanup "${tmp}" "${tmp_sums}"
+    return 0
+  fi
+
+  # Exactly one checksum line must name the file exactly ("<hash>  <name>" or "<hash> *<name>").
+  local expected actual
+  expected="$(awk -v n="${SELFUPDATE_PATH}" '$2 == n || $2 == "*" n { print tolower($1) }' "${tmp_sums}")"
+  if [[ ! "${expected}" =~ ^[0-9a-f]{64}$ ]]; then
+    log "ERROR: Self-update: SHA256SUMS has no single valid entry for '${SELFUPDATE_PATH}'; current script left unchanged."
+    self_update_cleanup "${tmp}" "${tmp_sums}"
+    return 0
+  fi
+  actual="$(sha256sum "${tmp}" | awk '{print $1}')"
+  if [[ "${actual}" != "${expected}" ]]; then
+    log "ERROR: Self-update: SHA256 mismatch for downloaded script (expected ${expected}, got ${actual}); current script left unchanged."
+    self_update_cleanup "${tmp}" "${tmp_sums}"
+    return 0
+  fi
+
+  if ! grep -q "^SCRIPT_VERSION=\"${remote_ver}\"" "${tmp}" 2>/dev/null; then
+    log "ERROR: Self-update: downloaded script does not declare SCRIPT_VERSION=\"${remote_ver}\"; current script left unchanged."
+    self_update_cleanup "${tmp}" "${tmp_sums}"
+    return 0
+  fi
+
+  local backup
+  backup="${script_path}.bak-$(date -u +%Y%m%d-%H%M%S)"
+  if ! cp -p "${script_path}" "${backup}"; then
+    log "ERROR: Self-update: failed to back up current script to '${backup}'; not updating."
+    self_update_cleanup "${tmp}" "${tmp_sums}"
+    return 0
+  fi
+
+  chmod 755 "${tmp}" || true
+  if ! mv -f "${tmp}" "${script_path}"; then
+    log "ERROR: Self-update: failed to replace '${script_path}'; current script left unchanged."
+    self_update_cleanup "${tmp}" "${tmp_sums}"
+    return 0
+  fi
+  chmod 755 "${script_path}" || true
+  self_update_cleanup "${tmp_sums}"
+
+  log "Self-update: script updated ${SCRIPT_VERSION} -> ${remote_ver} (SHA256 verified, backup: ${backup}). New version will be used on the next run."
+}
+
+# -------------------- Helpers: NetBird client installation --------------------
+
+netbird_is_installed() {
+  if dpkg-query -W -f='${Status}' netbird 2>/dev/null | grep -q "install ok installed"; then
+    return 0
+  fi
+  command -v netbird >/dev/null 2>&1
+}
+
+install_netbird_client() {
+  if [[ "${EUID}" -ne 0 ]]; then
+    log "ERROR: Installing NetBird requires root (run with sudo)."
+    return 1
+  fi
+
+  log "Installing NetBird client from the official APT repository (${NETBIRD_APT_URL})."
+  log "NOTE: The first installation installs the CURRENT latest version; the ${DELAY_DAYS}-day delay applies only to subsequent updates."
+
+  export DEBIAN_FRONTEND=noninteractive
+
+  if ! command -v curl >/dev/null 2>&1; then
+    log "ERROR: curl is required to download the NetBird repository key."
+    return 1
+  fi
+  if ! command -v gpg >/dev/null 2>&1; then
+    log "gpg not found; installing package 'gnupg' (needed to verify the repository key)."
+    if ! apt-get update -qq || ! apt-get install -y gnupg; then
+      log "ERROR: failed to install gnupg (needed to verify the NetBird repository key)."
+      return 1
     fi
   fi
 
-  local raw_url="https://raw.githubusercontent.com/${SELFUPDATE_REPO}/${remote_tag}/${SELFUPDATE_PATH}"
-  log "Self-update: downloading script from ${raw_url}"
+  local tmpdir
+  if ! tmpdir="$(mktemp -d)"; then
+    log "ERROR: failed to create a temporary directory."
+    return 1
+  fi
+  mkdir -m 700 "${tmpdir}/gnupg"
 
-  # Temp file MUST be in the same directory as the target so the final mv is
-  # an atomic rename (mktemp under /tmp can land on a different filesystem,
-  # turning mv into a non-atomic copy+unlink that can leave a truncated
-  # script behind if interrupted).
-  local script_dir tmp backup
-  script_dir="$(dirname "${script_path}")"
-  tmp="$(mktemp "${script_dir}/.netbird-delayed-update-linux.new.XXXXXX")" || {
-    log "Self-update: failed to create temporary file in ${script_dir}."
-    return 0
-  }
+  local rc=0
+  install_netbird_client_steps "${tmpdir}" || rc=$?
+  rm -rf "${tmpdir}" || true
+  return "${rc}"
+}
 
-  if ! curl -fsSL --retry 3 --connect-timeout 10 --max-time 60 \
-      -H "User-Agent: netbird-delayed-update-linux/${SCRIPT_VERSION}" "${raw_url}" -o "${tmp}" 2>/dev/null; then
-    log "Self-update: failed to download script from raw GitHub."
-    rm -f "${tmp}" || true
+install_netbird_client_steps() {
+  local tmpdir="$1"
+  local key="${tmpdir}/public.key"
+
+  if ! curl -fsSL --retry 3 --connect-timeout 10 --max-time 60 "${NETBIRD_KEY_URL}" -o "${key}"; then
+    log "ERROR: failed to download ${NETBIRD_KEY_URL}."
+    return 1
+  fi
+
+  # The file must contain exactly one primary key, and it must be NetBird's
+  # (a second key would otherwise be trusted for the repository too).
+  local fprs
+  fprs="$(GNUPGHOME="${tmpdir}/gnupg" gpg --batch --show-keys --with-colons "${key}" 2>/dev/null \
+    | awk -F: '$1 == "pub" { want = 1; next } want && $1 == "fpr" { print $10; want = 0 }')" || true
+  if [[ "${fprs}" != "${NETBIRD_KEY_FPR}" ]]; then
+    log "ERROR: NetBird repository key fingerprint mismatch (expected ${NETBIRD_KEY_FPR}, got '${fprs//$'\n'/ }'). Nothing installed."
+    return 1
+  fi
+  log "Repository key fingerprint verified: ${NETBIRD_KEY_FPR}."
+
+  local key_bin="${tmpdir}/netbird-archive-keyring.gpg"
+  if grep -q -- '-----BEGIN PGP PUBLIC KEY BLOCK-----' "${key}"; then
+    if ! GNUPGHOME="${tmpdir}/gnupg" gpg --batch --yes --dearmor -o "${key_bin}" "${key}"; then
+      log "ERROR: failed to dearmor the NetBird repository key."
+      return 1
+    fi
+  elif ! cp "${key}" "${key_bin}"; then
+    log "ERROR: failed to copy the NetBird repository key."
+    return 1
+  fi
+
+  # Note: this function runs in an '|| rc=$?' context where 'set -e' is off,
+  # so every step is checked explicitly.
+  if ! install -D -m 0644 "${key_bin}" "${NETBIRD_KEYRING}"; then
+    log "ERROR: failed to write ${NETBIRD_KEYRING}."
+    return 1
+  fi
+  if ! printf 'deb [signed-by=%s] %s stable main\n' "${NETBIRD_KEYRING}" "${NETBIRD_APT_URL}" \
+      >"${NETBIRD_APT_LIST}" || ! chmod 0644 "${NETBIRD_APT_LIST}"; then
+    log "ERROR: failed to write ${NETBIRD_APT_LIST}."
+    return 1
+  fi
+  log "Wrote ${NETBIRD_KEYRING} and ${NETBIRD_APT_LIST}."
+
+  if ! apt-get update; then
+    log "ERROR: 'apt-get update' failed after adding the NetBird repository."
+    return 1
+  fi
+  if ! apt-get install -y netbird; then
+    log "ERROR: 'apt-get install -y netbird' failed."
+    return 1
+  fi
+
+  hash -r
+  if ! command -v netbird >/dev/null 2>&1; then
+    log "ERROR: package installed but the 'netbird' command was not found in PATH."
+    return 1
+  fi
+
+  local ver
+  ver="$(get_installed_version)"
+  log "NetBird ${ver:-<unknown version>} installed (latest available, no delay for first install). Future updates will be delayed by ${DELAY_DAYS} day(s)."
+}
+
+ensure_netbird_client() {
+  # Returns 0 if NetBird is (now) installed, 1 if it is not and we should stop.
+  # Exits with an error if an installation was attempted and failed.
+  if netbird_is_installed; then
     return 0
   fi
 
-  if ! head -n 1 "${tmp}" | grep -q '^#!/usr/bin/env bash'; then
-    log "Self-update: downloaded file doesn't look like a bash script; aborting."
-    rm -f "${tmp}" || true
-    return 0
+  if [[ "${INSTALL_CLIENT}" -eq 1 ]]; then
+    log "NetBird not found; installing it (--install-client)."
+  elif [[ -t 0 ]]; then
+    local answer=""
+    if ! read -r -p "NetBird не найден. Установить сейчас? [Y/n] " answer; then
+      answer="n"
+    fi
+    case "${answer}" in
+      ""|[Yy]|[Yy][Ee][Ss]) ;;
+      *)
+        log "NetBird is not installed; installation declined by user."
+        return 1
+        ;;
+    esac
+  else
+    log "WARNING: NetBird (package 'netbird') is not installed. Not installing from a non-interactive run; use --install-client to install it."
+    return 1
   fi
 
-  # Sanity check: ensure the downloaded script's SCRIPT_VERSION matches the tag
-  # we asked for, so a truncated/wrong response doesn't get installed silently.
-  if ! grep -q "SCRIPT_VERSION=\"${remote_tag}\"" "${tmp}" 2>/dev/null; then
-    log "Self-update: sanity check failed (SCRIPT_VERSION mismatch in downloaded file); aborting."
-    rm -f "${tmp}" || true
-    return 0
+  if ! install_netbird_client; then
+    log "ERROR: NetBird installation failed."
+    exit 1
   fi
-
-  backup="${script_path}.bak-$(date -u +%Y%m%d-%H%M%S)"
-  cp -f "${script_path}" "${backup}" 2>/dev/null || true
-
-  chmod 755 "${tmp}" 2>/dev/null || true
-
-  if ! mv "${tmp}" "${script_path}"; then
-    log "Self-update: failed to overwrite script at '${script_path}'."
-    rm -f "${tmp}" || true
-    return 0
-  fi
-
-  chmod +x "${script_path}" || true
-  log "Self-update: script updated to version ${remote_tag} (backup: ${backup}). New version will be used on the next run."
+  return 0
 }
 
 # -------------------- Helpers: systemd install/uninstall --------------------
@@ -330,6 +523,11 @@ install_systemd_units() {
   local src
   if ! src="$(readlink -f "$0" 2>/dev/null || realpath "$0" 2>/dev/null || echo "$0")"; then
     src="$0"
+  fi
+
+  local extra_args=""
+  if [[ "${SELF_UPDATE}" -ne 1 ]]; then
+    extra_args=" --no-self-update"
   fi
 
   echo "Installing NetBird delayed auto-update (systemd)..."
@@ -347,7 +545,7 @@ After=network-online.target
 
 [Service]
 Type=oneshot
-ExecStart=${INSTALLED_SCRIPT_PATH} --delay-days ${DELAY_DAYS} --max-random-delay-seconds 0 --log-retention-days ${LOG_RETENTION_DAYS}
+ExecStart=${INSTALLED_SCRIPT_PATH} --delay-days ${DELAY_DAYS} --max-random-delay-seconds 0 --log-retention-days ${LOG_RETENTION_DAYS}${extra_args}
 Nice=10
 EOF
 
@@ -466,18 +664,27 @@ run_delayed_update() {
     fi
   fi
 
+  check_prerequisites
+
+  # Missing client: install it (--install-client or interactive "yes"),
+  # otherwise log and stop. Done before the jitter so a prompt is not delayed.
+  if ! netbird_is_installed; then
+    if ensure_netbird_client; then
+      log "NetBird was installed in this run; the delayed-update check starts with the next run."
+    fi
+    return 0
+  fi
+
   if [[ "${MAX_RANDOM_DELAY_SECONDS}" -gt 0 ]]; then
     local sleep_for=$(( RANDOM % (MAX_RANDOM_DELAY_SECONDS + 1) ))
     log "Sleeping for ${sleep_for} second(s) before running checks (random jitter)."
     sleep "${sleep_for}"
   fi
 
-  check_prerequisites
-
   local installed_ver
   installed_ver="$(get_installed_version)"
   if [[ -z "${installed_ver}" ]]; then
-    log "NetBird (package 'netbird') is not installed. Auto-install is not performed."
+    log "WARNING: 'netbird' command exists but the APT package 'netbird' is not installed; only APT installs are updated. Nothing to do."
     return 0
   fi
 
@@ -569,6 +776,14 @@ parse_args() {
         LOG_RETENTION_DAYS="$2"
         shift 2
         ;;
+      --install-client)
+        INSTALL_CLIENT=1
+        shift
+        ;;
+      --no-self-update)
+        SELF_UPDATE=0
+        shift
+        ;;
       --help|-h)
         usage
         exit 0
@@ -594,6 +809,10 @@ main() {
 
   case "${MODE}" in
     install)
+      if ! netbird_is_installed; then
+        check_prerequisites
+        ensure_netbird_client || true
+      fi
       install_systemd_units
       ;;
     uninstall)
