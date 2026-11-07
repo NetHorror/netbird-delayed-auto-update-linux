@@ -15,6 +15,13 @@ jobs:
       - name: Syntax check
         run: bash -n netbird-delayed-update-linux.sh
 
+      - name: --help / --version do not fail
+        run: |
+          bash netbird-delayed-update-linux.sh --help > /dev/null
+          bash netbird-delayed-update-linux.sh --help | grep -q -- '--install-client'
+          bash netbird-delayed-update-linux.sh --help | grep -q -- '--no-self-update'
+          bash netbird-delayed-update-linux.sh --version
+
       - name: ShellCheck
         uses: ludeeus/action-shellcheck@master
         with:
@@ -30,10 +37,18 @@ jobs:
         run: chmod +x netbird-delayed-update-linux.sh
 
       - name: Run once (NetBird not installed -> should exit cleanly)
-        run: sudo ./netbird-delayed-update-linux.sh --delay-days 0 --max-random-delay-seconds 0
+        # stdin from /dev/null: non-interactive, so it must only warn, never install.
+        run: sudo ./netbird-delayed-update-linux.sh --delay-days 0 --max-random-delay-seconds 0 --no-self-update < /dev/null
+
+      - name: Verify NetBird was not installed by a non-interactive run
+        run: |
+          if command -v netbird >/dev/null 2>&1; then
+            echo "netbird was installed without --install-client" >&2
+            exit 1
+          fi
 
       - name: Install systemd units
-        run: sudo ./netbird-delayed-update-linux.sh --install --daily-time "04:00" --max-random-delay-seconds 0
+        run: sudo ./netbird-delayed-update-linux.sh --install --daily-time "04:00" --max-random-delay-seconds 0 < /dev/null
 
       - name: Verify systemd units were created
         run: |

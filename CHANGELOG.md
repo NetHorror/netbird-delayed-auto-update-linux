@@ -2,6 +2,35 @@ All notable changes to this project will be documented in this file.
 
 ---
 
+## [0.3.0] – 2026-11-08
+
+### Added
+- NetBird client installation from the official APT repository (`https://pkgs.netbird.io/debian`):
+  - new `--install-client` flag installs it without a prompt (works with `--install` for unattended setup);
+  - interactive runs ask `NetBird не найден. Установить сейчас? [Y/n]`;
+  - non-interactive runs (systemd timer) only log a `WARNING` and exit with code `0`;
+  - the repository key is installed only if it contains exactly one primary key with fingerprint
+    `EFE37DF047DF7CCDF1FC54FA83F79AD029778355`; after `apt-get install` the script checks that `netbird` is in `PATH`.
+  - The first installation installs the current latest version; the delay applies only to later updates.
+- `--no-self-update` flag (also propagated into the systemd service by `--install`).
+- CI: `--help`/`--version` smoke check; the non-interactive run is checked not to install NetBird.
+
+### Changed
+- Self-update rewritten: the release tag must be `X.Y.Z`, the script and `SHA256SUMS` are downloaded
+  from the release assets, the script is applied only if its SHA-256 matches `SHA256SUMS` and it declares
+  the tag's `SCRIPT_VERSION`; the old script is backed up and replaced atomically (mode 755).
+  Releases must now carry the `netbird-delayed-update-linux.sh` and `SHA256SUMS` assets.
+- The `# Version:` header and `SCRIPT_VERSION` are in sync again.
+
+### Removed
+- `git pull --ff-only` (run as root) and raw-file downloads from the self-update.
+
+### Fixed
+- The delay could be bypassed: the candidate came from cached APT metadata while the upgrade ran
+  `apt-get update` and installed the newest version unpinned. APT is now refreshed before the
+  candidate is read, the exact aged version is installed, and a failed install neither restarts
+  the service nor records the update as done.
+
 ## [0.2.2] – 2026-08-12
 
 ### Added
