@@ -17,56 +17,33 @@ repository will never reach your machines.
 
 ## Quick start
 
-### 1. Download and verify the script (no clone needed)
-
-Replace `VER` with the latest release (see the
-[Releases](https://github.com/NetHorror/netbird-delayed-auto-update-linux/releases) page;
-tags have no `v` prefix, e.g. `0.3.0`):
+### 1. Install
 
 ~~~bash
 VER=0.3.0
 BASE=https://github.com/NetHorror/netbird-delayed-auto-update-linux/releases/download/$VER
-curl -fsSL -o netbird-delayed-update-linux.sh "$BASE/netbird-delayed-update-linux.sh"
-curl -fsSL -o SHA256SUMS "$BASE/SHA256SUMS"
-sha256sum -c SHA256SUMS --ignore-missing && chmod +x netbird-delayed-update-linux.sh
+curl -fsSLO "$BASE/netbird-delayed-update-linux.sh"
+curl -fsSLO "$BASE/SHA256SUMS"
+sha256sum -c SHA256SUMS --ignore-missing && sudo bash netbird-delayed-update-linux.sh --install --install-client
 ~~~
 
-### 2. Install the timer (and NetBird itself, if it is missing) in one command
+The install command:
+
+1. checks the script against `SHA256SUMS` from the release (the chain stops if the check fails);
+2. installs NetBird from the official APT repository if it is missing (`--install-client`);
+3. installs a daily systemd timer (04:00, with up to 1 hour of random delay).
+
+> **The first install takes the current latest NetBird version.** The delay (`--delay-days`, 10 days by default) applies only to later updates.
+
+### 2. Check
 
 ~~~bash
-sudo ./netbird-delayed-update-linux.sh --install --install-client
+systemctl list-timers netbird-delayed-update.timer
+sudo bash netbird-delayed-update-linux.sh --delay-days 0 --max-random-delay-seconds 0
 ~~~
 
-- `--install-client` installs NetBird from the official APT repository
-  (`https://pkgs.netbird.io/debian`) without asking, if it is not installed yet.
-  Without the flag an interactive run asks *"NetBird не найден. Установить сейчас? [Y/n]"*.
-- **The first installation installs the current latest NetBird version.**
-  The delay (`--delay-days`) applies **only to later updates**, not to the initial install.
-
-Cloning the repository (`git clone https://github.com/NetHorror/netbird-delayed-auto-update-linux.git`)
-works too, but is not required.
-
-### 3. (Optional) Test a one-off run
-
-Run a single check with **no** delay and **no** random jitter:
-
-~~~bash
-sudo ./netbird-delayed-update-linux.sh \
-  --delay-days 0 \
-  --max-random-delay-seconds 0 \
-  --log-retention-days 60
-~~~
-
-You should see log output mentioning:
-- the local NetBird version,
-- the candidate version from APT,
-- whether the upgrade is allowed or still "aging".
-
-The full log file is stored under:
-
-~~~text
-/var/lib/netbird-delayed-update/netbird-delayed-update-YYYYMMDD-HHMMSS.log
-~~~
+The second command is a one-off run without delay. It can upgrade NetBird right away if a newer version exists.
+Logs are in `/var/lib/netbird-delayed-update/`.
 
 ---
 
@@ -99,7 +76,7 @@ The full log file is stored under:
 - If NetBird is missing:
   - with `--install-client` it is installed without a prompt;
   - in an interactive run (`stdin` is a terminal) the script asks
-    `NetBird не найден. Установить сейчас? [Y/n]` (Enter = yes);
+    `NetBird not found. Install now? [Y/n]` (Enter = yes);
   - in a non-interactive run (systemd timer) it logs a `WARNING` and exits with code `0`,
     **without** installing anything.
 - Installation uses the official APT repository:
@@ -206,36 +183,20 @@ netbird-delayed-auto-update-linux/
 
 ---
 
-## Installing the systemd timer (recommended)
+## Options
 
-To install with **default** settings:
-- delay: **10 days**
-- random jitter: up to 3600 seconds
-- time: 04:00 (server local time)
-- log retention: 60 days
+| Option | Default | Meaning |
+|---|---|---|
+| `--install` | | Install the systemd service and timer; copies the script to `/usr/local/sbin/netbird-delayed-update.sh`. |
+| `--uninstall` | | Remove the service and timer. Add `--remove-state` to also delete the script, state and logs. |
+| `--install-client` | off | Install NetBird from APT if it is missing, without asking. The timer never installs NetBird by itself. |
+| `--delay-days N` | 10 | Days a new version must stay unchanged before it is installed. |
+| `--max-random-delay-seconds N` | 3600 | Random delay before each check. |
+| `--daily-time "HH:MM"` | 04:00 | Time of the daily run. |
+| `--log-retention-days N` | 60 | Delete logs older than N days; `0` keeps all logs. |
+| `--no-self-update` | off | Do not update this script from GitHub releases. |
 
-run:
-
-~~~bash
-sudo ./netbird-delayed-update-linux.sh --install
-~~~
-
-To customise the schedule and settings:
-
-~~~bash
-sudo ./netbird-delayed-update-linux.sh --install \
-  --delay-days 10 \
-  --max-random-delay-seconds 3600 \
-  --log-retention-days 60 \
-  --daily-time "04:00"
-~~~
-
-This will:
-- copy the script to `/usr/local/sbin/netbird-delayed-update.sh`;
-- create `/etc/systemd/system/netbird-delayed-update.service`;
-- create `/etc/systemd/system/netbird-delayed-update.timer`;
-- reload systemd and enable the timer;
-- schedule the script to run daily at the specified time, with a random delay.
+Values given to `--install` are written into the systemd unit. To change them, run `--install` again.
 
 ---
 
