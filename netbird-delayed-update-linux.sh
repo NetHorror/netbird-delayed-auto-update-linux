@@ -438,13 +438,17 @@ perform_update() {
 
   export DEBIAN_FRONTEND=noninteractive
 
-  if ! apt-get update 2>/dev/null; then
-    log "WARNING: 'apt-get update' failed; continuing with cached metadata."
+  # Install the exact version that has matured. An unpinned install would pick
+  # whatever APT offers right now, which can be newer than the one we waited for.
+  if ! apt-get install --only-upgrade -y "netbird=${candidate_ver}"; then
+    log "ERROR: failed to install netbird=${candidate_ver}; service not restarted."
+    return 1
   fi
 
-  if ! apt-get install --only-upgrade -y netbird netbird-ui 2>/dev/null; then
-    log "WARNING: Failed to upgrade 'netbird-ui' (possibly not installed). Retrying with 'netbird' only."
-    apt-get install --only-upgrade -y netbird
+  if dpkg-query -W -f='${Status}' netbird-ui 2>/dev/null | grep -q "install ok installed"; then
+    if ! apt-get install --only-upgrade -y "netbird-ui=${candidate_ver}"; then
+      log "WARNING: failed to upgrade netbird-ui to ${candidate_ver}; GUI left at its current version."
+    fi
   fi
 
   restart_netbird_service
@@ -475,6 +479,12 @@ run_delayed_update() {
   if [[ -z "${installed_ver}" ]]; then
     log "NetBird (package 'netbird') is not installed. Auto-install is not performed."
     return 0
+  fi
+
+  # Refresh APT metadata first: the candidate must reflect the current repo,
+  # not whatever was cached the last time apt ran.
+  if ! apt-get update -qq 2>/dev/null; then
+    log "WARNING: 'apt-get update' failed; using cached APT metadata."
   fi
 
   local candidate_ver
@@ -516,7 +526,9 @@ run_delayed_update() {
     return 0
   fi
 
-  perform_update "${installed_ver}" "${candidate_ver}" "${age_days}"
+  if ! perform_update "${installed_ver}" "${candidate_ver}" "${age_days}"; then
+    return 1
+  fi
   save_state "${candidate_ver}" "${state_first_seen}" "${now_utc}"
 }
 
