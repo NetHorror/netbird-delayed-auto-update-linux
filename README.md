@@ -253,7 +253,7 @@ All runtime files live under:
 You can also run the script manually without installing the timer, for example:
 
 ~~~bash
-sudo ./netbird-delayed-update-linux.sh \
+sudo /usr/local/sbin/netbird-delayed-update.sh \
   --delay-days 7 \
   --max-random-delay-seconds 0 \
   --log-retention-days 30
@@ -270,13 +270,13 @@ This is useful for:
 To remove only the systemd units (keep script, state and logs):
 
 ~~~bash
-sudo ./netbird-delayed-update-linux.sh --uninstall
+sudo /usr/local/sbin/netbird-delayed-update.sh --uninstall
 ~~~
 
 To also remove the installed script and all runtime files:
 
 ~~~bash
-sudo ./netbird-delayed-update-linux.sh --uninstall --remove-state
+sudo /usr/local/sbin/netbird-delayed-update.sh --uninstall --remove-state
 ~~~
 
 This will:
