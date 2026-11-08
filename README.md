@@ -20,11 +20,7 @@ repository will never reach your machines.
 ### 1. Install
 
 ~~~bash
-VER=0.3.0
-BASE=https://github.com/NetHorror/netbird-delayed-auto-update-linux/releases/download/$VER
-curl -fsSLO "$BASE/netbird-delayed-update-linux.sh"
-curl -fsSLO "$BASE/SHA256SUMS"
-sha256sum -c SHA256SUMS --ignore-missing && sudo bash netbird-delayed-update-linux.sh --install --install-client
+curl -fsSL https://github.com/NetHorror/netbird-delayed-auto-update-linux/releases/download/0.3.0/install.sh | sudo bash
 ~~~
 
 The install command:
@@ -257,7 +253,7 @@ All runtime files live under:
 You can also run the script manually without installing the timer, for example:
 
 ~~~bash
-sudo ./netbird-delayed-update-linux.sh \
+sudo /usr/local/sbin/netbird-delayed-update.sh \
   --delay-days 7 \
   --max-random-delay-seconds 0 \
   --log-retention-days 30
@@ -274,13 +270,13 @@ This is useful for:
 To remove only the systemd units (keep script, state and logs):
 
 ~~~bash
-sudo ./netbird-delayed-update-linux.sh --uninstall
+sudo /usr/local/sbin/netbird-delayed-update.sh --uninstall
 ~~~
 
 To also remove the installed script and all runtime files:
 
 ~~~bash
-sudo ./netbird-delayed-update-linux.sh --uninstall --remove-state
+sudo /usr/local/sbin/netbird-delayed-update.sh --uninstall --remove-state
 ~~~
 
 This will:
