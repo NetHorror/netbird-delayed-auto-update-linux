@@ -17,40 +17,33 @@ repository will never reach your machines.
 
 ## Quick start
 
-### 1. Clone the repository
+### 1. Install
 
 ~~~bash
-git clone https://github.com/NetHorror/netbird-delayed-auto-update-linux.git
-cd netbird-delayed-auto-update-linux
+VER=0.3.0
+BASE=https://github.com/NetHorror/netbird-delayed-auto-update-linux/releases/download/$VER
+curl -fsSLO "$BASE/netbird-delayed-update-linux.sh"
+curl -fsSLO "$BASE/SHA256SUMS"
+sha256sum -c SHA256SUMS --ignore-missing && sudo bash netbird-delayed-update-linux.sh --install --install-client
 ~~~
 
-### 2. Make the main script executable
+The install command:
+
+1. checks the script against `SHA256SUMS` from the release (the chain stops if the check fails);
+2. installs NetBird from the official APT repository if it is missing (`--install-client`);
+3. installs a daily systemd timer (04:00, with up to 1 hour of random delay).
+
+> **The first install takes the current latest NetBird version.** The delay (`--delay-days`, 10 days by default) applies only to later updates.
+
+### 2. Check
 
 ~~~bash
-chmod +x ./netbird-delayed-update-linux.sh
+systemctl list-timers netbird-delayed-update.timer
+sudo bash netbird-delayed-update-linux.sh --delay-days 0 --max-random-delay-seconds 0
 ~~~
 
-### 3. (Optional) Test a one-off run
-
-Run a single check with **no** delay and **no** random jitter:
-
-~~~bash
-sudo ./netbird-delayed-update-linux.sh \
-  --delay-days 0 \
-  --max-random-delay-seconds 0 \
-  --log-retention-days 60
-~~~
-
-You should see log output mentioning:
-- the local NetBird version,
-- the candidate version from APT,
-- whether the upgrade is allowed or still "aging".
-
-The full log file is stored under:
-
-~~~text
-/var/lib/netbird-delayed-update/netbird-delayed-update-YYYYMMDD-HHMMSS.log
-~~~
+The second command is a one-off run without delay. It can upgrade NetBird right away if a newer version exists.
+Logs are in `/var/lib/netbird-delayed-update/`.
 
 ---
 
@@ -76,21 +69,39 @@ The full log file is stored under:
 /var/lib/netbird-delayed-update/state.json
 ~~~
 
-### No auto-install
+### Client installation (opt-in)
 
-- The script only upgrades an already installed `netbird` package.
-- If NetBird is not present locally, it logs a message and exits without installing anything.
+- NetBird is considered installed if `dpkg-query` reports the `netbird` package
+  as installed or `command -v netbird` finds the CLI.
+- If NetBird is missing:
+  - with `--install-client` it is installed without a prompt;
+  - in an interactive run (`stdin` is a terminal) the script asks
+    `NetBird not found. Install now? [Y/n]` (Enter = yes);
+  - in a non-interactive run (systemd timer) it logs a `WARNING` and exits with code `0`,
+    **without** installing anything.
+- Installation uses the official APT repository:
+  1. downloads `https://pkgs.netbird.io/debian/public.key`;
+  2. verifies that the file contains exactly one primary key with fingerprint
+     `EFE37DF047DF7CCDF1FC54FA83F79AD029778355` (otherwise nothing is installed);
+  3. stores it as `/usr/share/keyrings/netbird-archive-keyring.gpg`;
+  4. writes `/etc/apt/sources.list.d/netbird.list`:
+     `deb [signed-by=/usr/share/keyrings/netbird-archive-keyring.gpg] https://pkgs.netbird.io/debian stable main`;
+  5. runs `apt-get update` and `apt-get install -y netbird`, then checks that `netbird` is in `PATH`.
+- `gnupg` is installed automatically if `gpg` is missing (needed for the key check).
+- The first installation gets the **current latest** version; the delay applies only to subsequent updates.
+- A NetBird binary that was not installed as the APT package `netbird` is left alone (it is not updated).
 
 ### APT-only update
 
 - Uses APT metadata (`apt-cache policy netbird`) to detect the candidate version.
-- Upgrade is performed via:
+- Upgrade installs exactly the version that has aged (pinned), so a newer
+  release that appeared in the meantime cannot bypass the delay:
 
 ~~~bash
-apt-get install --only-upgrade -y netbird [netbird-ui]
+apt-get install --only-upgrade -y netbird=<aged-version> [netbird-ui=<aged-version>]
 ~~~
 
-- If `netbird-ui` is not available, the script falls back to upgrading `netbird` only.
+- `netbird-ui` is upgraded only if it is installed.
 
 ### Log files with retention
 
@@ -103,14 +114,25 @@ apt-get install --only-upgrade -y netbird [netbird-ui]
 - `--log-retention-days` (default: `60`) controls how long these logs are kept.
 - `--log-retention-days 0` disables log cleanup.
 
-### Script self-update (optional)
+### Script self-update (on by default, `--no-self-update` to disable)
 
-- On each run, the script can check the latest GitHub release of this repository.
-- If a newer version exists, it:
-  - tries `git pull --ff-only` when the script lives inside a git checkout, or
-  - downloads `netbird-delayed-update-linux.sh` from the tagged version on
-    `raw.githubusercontent.com` and overwrites the local script.
+- On each run the script queries
+  `https://api.github.com/repos/NetHorror/netbird-delayed-auto-update-linux/releases/latest`.
+- The tag (without a leading `v`) must look like `X.Y.Z` and be newer than the running version.
+- From the release **assets** it downloads `netbird-delayed-update-linux.sh` and `SHA256SUMS`
+  (into the script's own directory, so the final `mv` is atomic). If either asset is missing, nothing changes.
+- The update is applied only if:
+  - the script's SHA-256 matches the `SHA256SUMS` line for exactly `netbird-delayed-update-linux.sh`, and
+  - the script declares `SCRIPT_VERSION="<tag version>"`.
+- The previous script is kept as `<path>.bak-<timestamp>`; the new one is moved in atomically with mode `755`.
+- No `git pull` and no download from `raw.githubusercontent.com` are used anymore.
 - The new version is used on the **next** run.
+- `--no-self-update` disables the check (also written into the systemd service when used with `--install`).
+
+> **Releasing:** each release must use a tag without the `v` prefix (e.g. `0.3.0`) and carry two
+> assets: `netbird-delayed-update-linux.sh` and `SHA256SUMS`
+> (`sha256sum netbird-delayed-update-linux.sh > SHA256SUMS`). Installations of 0.2.x
+> still update themselves from the raw file of the tag, which is why the tag must match `SCRIPT_VERSION`.
 
 ### Systemd integration
 
@@ -132,10 +154,11 @@ apt-get install --only-upgrade -y netbird [netbird-ui]
 - Linux system with:
   - `systemd` (for the service and timer),
   - `bash`,
-  - `curl`,
+  - `curl`, `sha256sum` (coreutils),
   - `flock` (recommended; provided by util-linux on most distros),
-  - APT (`apt-get`, `apt-cache`, `dpkg-query`).
-- NetBird installed from an APT repository, so that:
+  - APT (`apt-get`, `apt-cache`, `dpkg-query`),
+  - `gpg` (only for `--install-client`; installed automatically if missing).
+- NetBird installed from an APT repository (or let the script install it with `--install-client`), so that:
 
 ~~~bash
 apt-cache policy netbird
@@ -160,50 +183,36 @@ netbird-delayed-auto-update-linux/
 
 ---
 
-## Installing the systemd timer (recommended)
+## Options
 
-To install with **default** settings:
-- delay: **10 days**
-- random jitter: up to 3600 seconds
-- time: 04:00 (server local time)
-- log retention: 60 days
+| Option | Default | Meaning |
+|---|---|---|
+| `--install` | | Install the systemd service and timer; copies the script to `/usr/local/sbin/netbird-delayed-update.sh`. |
+| `--uninstall` | | Remove the service and timer. Add `--remove-state` to also delete the script, state and logs. |
+| `--install-client` | off | Install NetBird from APT if it is missing, without asking. The timer never installs NetBird by itself. |
+| `--delay-days N` | 10 | Days a new version must stay unchanged before it is installed. |
+| `--max-random-delay-seconds N` | 3600 | Random delay before each check. |
+| `--daily-time "HH:MM"` | 04:00 | Time of the daily run. |
+| `--log-retention-days N` | 60 | Delete logs older than N days; `0` keeps all logs. |
+| `--no-self-update` | off | Do not update this script from GitHub releases. |
 
-run:
-
-~~~bash
-sudo ./netbird-delayed-update-linux.sh --install
-~~~
-
-To customise the schedule and settings:
-
-~~~bash
-sudo ./netbird-delayed-update-linux.sh --install \
-  --delay-days 10 \
-  --max-random-delay-seconds 3600 \
-  --log-retention-days 60 \
-  --daily-time "04:00"
-~~~
-
-This will:
-- copy the script to `/usr/local/sbin/netbird-delayed-update.sh`;
-- create `/etc/systemd/system/netbird-delayed-update.service`;
-- create `/etc/systemd/system/netbird-delayed-update.timer`;
-- reload systemd and enable the timer;
-- schedule the script to run daily at the specified time, with a random delay.
+Values given to `--install` are written into the systemd unit. To change them, run `--install` again.
 
 ---
 
 ## How it works (behaviour details)
 
 On each run (manual or via systemd), the script:
-1. Verifies that the system is APT-based and that `netbird` is installed locally.
+1. Verifies that the system is APT-based and that `netbird` is installed locally
+   (if not, see *Client installation* above; a freshly installed client is not
+   checked for updates in the same run).
 2. Reads the local version from `dpkg`:
 
 ~~~bash
 dpkg-query -W -f='${Version}\n' netbird
 ~~~
 
-3. Reads the candidate version from APT:
+3. Runs `apt-get update` (best-effort) and reads the candidate version from APT:
 
 ~~~bash
 apt-cache policy netbird
@@ -221,8 +230,7 @@ apt-cache policy netbird
 7. If the candidate has aged enough:
    - compares local vs candidate version with `dpkg --compare-versions`;
    - if the local version is older:
-     - runs `apt-get update` (best-effort),
-     - attempts to upgrade `netbird` and optionally `netbird-ui`,
+     - installs exactly the aged version of `netbird` (and `netbird-ui`, if installed),
      - restarts the NetBird service via `systemctl restart netbird` or `netbird service restart`.
 
 ---
