@@ -2,6 +2,11 @@ All notable changes to this project will be documented in this file.
 
 ---
 
+## [Unreleased]
+
+### Changed
+- The one-line installer is now named install-linux.sh (was install.sh). The command in the README is updated; the script and SHA256SUMS are unchanged.
+
 ## [0.3.0] – 2026-11-08
 
 ### Added
