@@ -20,11 +20,7 @@ repository will never reach your machines.
 ### 1. Install
 
 ~~~bash
-VER=0.3.0
-BASE=https://github.com/NetHorror/netbird-delayed-auto-update-linux/releases/download/$VER
-curl -fsSLO "$BASE/netbird-delayed-update-linux.sh"
-curl -fsSLO "$BASE/SHA256SUMS"
-sha256sum -c SHA256SUMS --ignore-missing && sudo bash netbird-delayed-update-linux.sh --install --install-client
+curl -fsSL https://github.com/NetHorror/netbird-delayed-auto-update-linux/releases/download/0.3.0/install.sh | sudo bash
 ~~~
 
 The install command:
